@@ -1,0 +1,692 @@
+import { useEffect, useMemo, useState } from "react"
+import { DashboardLayout } from "@/components/Layout/DashboardLayout"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Plus, UtensilsCrossed, Trash2, Pencil, X } from "lucide-react"
+import { formatCurrency } from "@/lib/utils"
+import {
+  getAllProducts,
+  createProduct,
+  updateProduct,
+  deleteProduct,
+  uploadProductImage,
+  type ProductResponseDto,
+  type PortionPrices,
+} from "@/lib/productsApi"
+import { createCategory, getAllCategories, type CategoryResponseDto } from "@/lib/categoriesApi"
+import { getAllInventoryItems, type InventoryItemResponseDto } from "@/lib/inventoryApi"
+
+type RecipeLineForm = { itemId: number | ""; quantity: string }
+
+const MenuItems = () => {
+  const [items, setItems] = useState<ProductResponseDto[]>([])
+  const [categories, setCategories] = useState<CategoryResponseDto[]>([])
+  const [inventoryItems, setInventoryItems] = useState<InventoryItemResponseDto[]>([])
+
+  const [isLoadingCategories, setIsLoadingCategories] = useState(false)
+  const [isDialogOpen, setIsDialogOpen] = useState(false)
+  const [editingProductId, setEditingProductId] = useState<number | null>(null)
+
+  const [newItem, setNewItem] = useState({
+    name: "",
+    price: "", // base/default price
+    categoryId: "" as number | "",
+    description: "",
+
+    hasPortionPricing: false,
+    mediumPrice: "",
+    largePrice: "",
+  })
+
+  const [recipeLines, setRecipeLines] = useState<RecipeLineForm[]>([])
+  const [imageFile, setImageFile] = useState<File | null>(null)
+  const [isSaving, setIsSaving] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+
+  const [isAddingCategory, setIsAddingCategory] = useState(false)
+  const [newCategoryName, setNewCategoryName] = useState("")
+  const [isSavingCategory, setIsSavingCategory] = useState(false)
+
+  const refreshCategories = async () => {
+    setIsLoadingCategories(true)
+    try {
+      const cats = await getAllCategories()
+      const active = cats.filter((c) => c.isActive !== false)
+
+      // normalize ids to numbers + dedupe by categoryId
+      const unique = new Map<number, CategoryResponseDto>()
+      for (const c of active) {
+        const id = Number((c as any).categoryId)
+        if (Number.isFinite(id)) unique.set(id, { ...c, categoryId: id })
+      }
+
+      setCategories(Array.from(unique.values()))
+    } finally {
+      setIsLoadingCategories(false)
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        setIsLoadingCategories(true)
+
+        const [cats, prods, inv] = await Promise.all([getAllCategories(), getAllProducts(), getAllInventoryItems()])
+        if (cancelled) return
+
+        const active = cats.filter((c) => c.isActive !== false)
+
+        const unique = new Map<number, CategoryResponseDto>()
+        for (const c of active) {
+          const id = Number((c as any).categoryId)
+          if (Number.isFinite(id)) unique.set(id, { ...c, categoryId: id })
+        }
+
+        setCategories(Array.from(unique.values()))
+        setItems(prods)
+        setInventoryItems(inv)
+      } catch (e) {
+        console.error(e)
+        if (!cancelled) {
+          setUploadError("Failed to load categories/products/inventory. Check backend and try again.")
+          setCategories([]) // removed hardcoded categories
+          setInventoryItems([])
+        }
+      } finally {
+        if (!cancelled) setIsLoadingCategories(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const resetForm = () => {
+    setNewItem({
+      name: "",
+      price: "",
+      categoryId: "",
+      description: "",
+      hasPortionPricing: false,
+      mediumPrice: "",
+      largePrice: "",
+    })
+    setRecipeLines([])
+    setImageFile(null)
+    setUploadError(null)
+    setIsSaving(false)
+    setIsAddingCategory(false)
+    setNewCategoryName("")
+    setIsSavingCategory(false)
+  }
+
+  const handleCreateCategory = async () => {
+    const name = newCategoryName.trim()
+    if (!name || isSavingCategory) return
+
+    setIsSavingCategory(true)
+    setUploadError(null)
+
+    try {
+      const created = await createCategory(name)
+
+      // refresh list from backend so the dropdown is up-to-date
+      await refreshCategories()
+
+      // keep the newly created category selected
+      setNewItem((prev) => ({ ...prev, categoryId: created.categoryId }))
+
+      setNewCategoryName("")
+      setIsAddingCategory(false)
+    } catch (e) {
+      console.error(e)
+      setUploadError("Failed to create category. Check backend and try again.")
+    } finally {
+      setIsSavingCategory(false)
+    }
+  }
+
+  const usedInventoryIds = useMemo(() => {
+    const ids = new Set<number>()
+    for (const line of recipeLines) if (line.itemId !== "") ids.add(line.itemId)
+    return ids
+  }, [recipeLines])
+
+  const handleSaveItem = async () => {
+    if (!newItem.name || !newItem.price || newItem.categoryId === "") return
+
+    setIsSaving(true)
+    setUploadError(null)
+
+    const isEditing = editingProductId !== null
+    const existingProduct = isEditing ? items.find((p) => p.productId === editingProductId) : null
+
+    const basePrice = Number.parseFloat(newItem.price)
+    if (!Number.isFinite(basePrice) || basePrice < 0) {
+      setUploadError("Invalid price.")
+      setIsSaving(false)
+      return
+    }
+
+    let portionPrices: PortionPrices = {}
+    if (newItem.hasPortionPricing) {
+      const medium = Number.parseFloat(newItem.mediumPrice)
+      const large = Number.parseFloat(newItem.largePrice)
+      if (!Number.isFinite(medium) || medium < 0 || !Number.isFinite(large) || large < 0) {
+        setUploadError("Please enter valid Medium and Large portion prices.")
+        setIsSaving(false)
+        return
+      }
+      portionPrices = { MEDIUM: medium, LARGE: large }
+    }
+
+    // Build recipe payload (kg)
+    const recipe = recipeLines
+      .map((l) => ({
+        itemId: l.itemId === "" ? NaN : l.itemId,
+        quantity: Number.parseFloat(l.quantity),
+      }))
+      .filter((l) => Number.isFinite(l.itemId) && Number.isFinite(l.quantity) && l.quantity > 0)
+
+    // If user started recipe but left invalid rows, block save to match backend expectations
+    const hasAnyRecipeInput = recipeLines.some((l) => l.itemId !== "" || l.quantity.trim() !== "")
+    const allRecipeValid = recipe.length === recipeLines.filter((l) => l.itemId !== "" || l.quantity.trim() !== "").length
+    if (hasAnyRecipeInput && !allRecipeValid) {
+      setUploadError("Recipe has invalid rows. Select an item and enter a quantity (kg) > 0 for each row.")
+      setIsSaving(false)
+      return
+    }
+
+    const imageUrl: string | null =
+      (existingProduct?.imageUrl ?? null) === "/placeholder.svg" ? null : (existingProduct?.imageUrl ?? null)
+
+    try {
+      const payload = {
+        categoryId: newItem.categoryId,
+        name: newItem.name.trim(),
+        description: newItem.description.trim(),
+        costPrice: basePrice, // keep same as previous behavior
+        sellingPrice: newItem.hasPortionPricing && portionPrices.MEDIUM != null ? portionPrices.MEDIUM : basePrice,
+        imageUrl,
+        isAvailable: true,
+
+        hasPortionPricing: newItem.hasPortionPricing,
+        portionPrices,
+        recipe,
+      }
+
+      // 1) Create or update product (JSON)
+      let saved: ProductResponseDto
+      if (isEditing && existingProduct) {
+        saved = await updateProduct(existingProduct.productId, payload)
+        setItems((prev) => prev.map((p) => (p.productId === saved.productId ? saved : p)))
+      } else {
+        saved = await createProduct(payload)
+        setItems((prev) => [...prev, saved])
+      }
+
+      // 2) If an image file is selected, upload it (multipart)
+      if (imageFile) {
+        try {
+          const withImage = await uploadProductImage(saved.productId, imageFile)
+          setItems((prev) => prev.map((p) => (p.productId === withImage.productId ? withImage : p)))
+        } catch (e) {
+          console.error(e)
+          setUploadError("Image upload failed. Product was saved without updating the image.")
+        }
+      }
+
+      resetForm()
+      setEditingProductId(null)
+      setIsDialogOpen(false)
+    } catch (e) {
+      console.error(e)
+      setUploadError("Failed to save product. Check backend and try again.")
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleDelete = async (productId: number) => {
+    try {
+      await deleteProduct(productId)
+      setItems((prev) => prev.filter((p) => p.productId !== productId))
+    } catch (error) {
+      console.error(error)
+      setUploadError("Failed to delete product.")
+    }
+  }
+
+  const canSave =
+    !isSaving &&
+    !!newItem.name &&
+    !!newItem.price &&
+    newItem.categoryId !== "" &&
+    (!newItem.hasPortionPricing || (!!newItem.mediumPrice && !!newItem.largePrice))
+
+  return (
+    <DashboardLayout>
+      <div className="p-8 space-y-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold flex items-center gap-3">
+              <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <UtensilsCrossed className="h-5 w-5" />
+              </span>
+              Menu Items
+            </h1>
+            <p className="text-muted-foreground mt-1">Manage the items that appear in your POS terminal and QR menu.</p>
+          </div>
+
+          <Dialog
+            open={isDialogOpen}
+            onOpenChange={(open) => {
+              setIsDialogOpen(open)
+              if (!open) {
+                resetForm()
+                setEditingProductId(null)
+              }
+            }}
+          >
+            <DialogTrigger
+              asChild
+              onClick={() => {
+                setEditingProductId(null)
+                resetForm()
+              }}
+            >
+              <Button className="gap-2">
+                <Plus className="h-4 w-4" />
+                Add Menu Item
+              </Button>
+            </DialogTrigger>
+
+            <DialogContent className="sm:max-w-[520px]">
+              <DialogHeader>
+                <DialogTitle>{editingProductId ? "Edit Menu Item" : "Add New Menu Item"}</DialogTitle>
+              </DialogHeader>
+
+              <div className="grid gap-4 py-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="item-name">Item Name</Label>
+                  <Input
+                    id="item-name"
+                    value={newItem.name}
+                    onChange={(e) => setNewItem({ ...newItem, name: e.target.value })}
+                    placeholder="E.g. Chicken Fried Rice"
+                  />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="item-category">Category</Label>
+                  <div className="flex gap-2">
+                    <select
+                      id="item-category"
+                      value={newItem.categoryId === "" ? "" : String(newItem.categoryId)}
+                      disabled={isLoadingCategories}
+                      onChange={(e) =>
+                        setNewItem({
+                          ...newItem,
+                          categoryId: e.target.value === "" ? "" : Number(e.target.value),
+                        })
+                      }
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
+                    >
+                      <option value="">{isLoadingCategories ? "Loading categories..." : "Select category"}</option>
+                      {categories.map((c) => (
+                        <option key={c.categoryId} value={String(c.categoryId)}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={() => setIsAddingCategory((prev) => !prev)}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+
+                  {isAddingCategory && (
+                    <div className="mt-2 flex gap-2">
+                      <Input
+                        placeholder="New category name"
+                        value={newCategoryName}
+                        onChange={(e) => setNewCategoryName(e.target.value)}
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={handleCreateCategory}
+                        disabled={isSavingCategory || !newCategoryName.trim()}
+                      >
+                        {isSavingCategory ? "Saving..." : "Add"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setIsAddingCategory(false)
+                          setNewCategoryName("")
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="item-price">Base Price</Label>
+                  <Input
+                    id="item-price"
+                    type="number"
+                    min="0"
+                    value={newItem.price}
+                    onChange={(e) => setNewItem({ ...newItem, price: e.target.value })}
+                    placeholder="E.g. 450"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    If portion pricing is enabled, Medium will be used as the default selling price.
+                  </p>
+                </div>
+
+                {/* Portion pricing */}
+                <div className="rounded-md border border-muted p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-medium">Portion Pricing</p>
+                      <p className="text-xs text-muted-foreground">Enable Medium/Large prices for this item.</p>
+                    </div>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={newItem.hasPortionPricing}
+                        onChange={(e) =>
+                          setNewItem((prev) => ({
+                            ...prev,
+                            hasPortionPricing: e.target.checked,
+                            mediumPrice: e.target.checked ? prev.mediumPrice : "",
+                            largePrice: e.target.checked ? prev.largePrice : "",
+                          }))
+                        }
+                      />
+                      Has portion pricing
+                    </label>
+                  </div>
+
+                  {newItem.hasPortionPricing && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="grid gap-2">
+                        <Label htmlFor="portion-medium">Medium Price</Label>
+                        <Input
+                          id="portion-medium"
+                          type="number"
+                          min="0"
+                          value={newItem.mediumPrice}
+                          onChange={(e) => setNewItem({ ...newItem, mediumPrice: e.target.value })}
+                          placeholder="E.g. 450"
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label htmlFor="portion-large">Large Price</Label>
+                        <Input
+                          id="portion-large"
+                          type="number"
+                          min="0"
+                          value={newItem.largePrice}
+                          onChange={(e) => setNewItem({ ...newItem, largePrice: e.target.value })}
+                          placeholder="E.g. 550"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="item-description">Description / Ingredients</Label>
+                  <textarea
+                    id="item-description"
+                    value={newItem.description}
+                    onChange={(e) => setNewItem({ ...newItem, description: e.target.value })}
+                    rows={3}
+                    className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    placeholder="Short description, key ingredients, etc."
+                  />
+                </div>
+
+                {/* Recipe */}
+                <div className="rounded-md border border-muted p-3 space-y-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-medium">Recipe</p>
+                      <p className="text-xs text-muted-foreground">
+                        Select inventory items used and quantity in <span className="font-medium">kg</span>.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setRecipeLines((prev) => [...prev, { itemId: "", quantity: "" }])}
+                      disabled={inventoryItems.length === 0}
+                    >
+                      Add Ingredient
+                    </Button>
+                  </div>
+
+                  {inventoryItems.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No inventory items loaded. Create inventory items first to build recipes.
+                    </p>
+                  ) : recipeLines.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No recipe items added.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {recipeLines.map((line, idx) => (
+                        <div key={idx} className="grid grid-cols-[1fr_140px_36px] gap-2 items-end">
+                          <div className="grid gap-1">
+                            <Label className="text-xs">Inventory Item</Label>
+                            <select
+                              value={line.itemId === "" ? "" : String(line.itemId)}
+                              onChange={(e) => {
+                                const nextId = e.target.value === "" ? "" : Number(e.target.value)
+                                setRecipeLines((prev) => prev.map((p, i) => (i === idx ? { ...p, itemId: nextId } : p)))
+                              }}
+                              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
+                            >
+                              <option value="">Select item</option>
+                              {inventoryItems.map((inv) => (
+                                <option
+                                  key={inv.itemId}
+                                  value={String(inv.itemId)}
+                                  disabled={usedInventoryIds.has(inv.itemId) && inv.itemId !== line.itemId}
+                                >
+                                  {inv.itemName}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="grid gap-1">
+                            <Label className="text-xs">Qty (kg)</Label>
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              inputMode="decimal"
+                              value={line.quantity}
+                              onChange={(e) =>
+                                setRecipeLines((prev) => prev.map((p, i) => (i === idx ? { ...p, quantity: e.target.value } : p)))
+                              }
+                              placeholder="e.g. 0.25"
+                            />
+                          </div>
+
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setRecipeLines((prev) => prev.filter((_, i) => i !== idx))}
+                            aria-label="Remove ingredient"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="item-image-file">Item Image</Label>
+                  <Input
+                    id="item-image-file"
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Select an image from your computer. If you don&apos;t select a file, imageUrl will remain null (or keep existing on edit).
+                  </p>
+                </div>
+
+                {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleSaveItem} disabled={!canSave}>
+                  {isSaving ? "Saving..." : editingProductId ? "Update Item" : "Save Item"}
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+
+        <Card className="modern-card shadow-modern-lg border-0">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-lg font-semibold">Current Menu</CardTitle>
+            <span className="text-sm text-muted-foreground">{items.length} items</span>
+          </CardHeader>
+
+          <CardContent>
+            {items.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                <div className="mb-3 rounded-full bg-muted p-3">
+                  <UtensilsCrossed className="h-5 w-5" />
+                </div>
+                <p className="font-medium">No menu items yet</p>
+                <p className="text-sm">Click &quot;Add Menu Item&quot; to create your first item.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {items.map((item) => (
+                  <Card
+                    key={item.productId}
+                    className="border border-muted/60 hover:shadow-modern transition-all duration-200"
+                  >
+                    <CardContent className="p-4 space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h3 className="font-semibold truncate">{item.name}</h3>
+                            <Badge className="bg-slate-100 text-slate-800" variant="outline">
+                              {categories.find((c) => c.categoryId === item.categoryId)?.name ?? `Category ${item.categoryId}`}
+                            </Badge>
+                          </div>
+
+                          <p className="text-sm text-accent font-semibold">{formatCurrency(item.sellingPrice)}</p>
+
+                          {item.hasPortionPricing && (
+                            <p className="text-xs text-muted-foreground mt-1">
+                              Portions: MEDIUM {item.portionPrices?.MEDIUM != null ? formatCurrency(item.portionPrices.MEDIUM) : "-"}{" "}
+                              · LARGE {item.portionPrices?.LARGE != null ? formatCurrency(item.portionPrices.LARGE) : "-"}
+                            </p>
+                          )}
+
+                          {item.description && <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{item.description}</p>}
+                        </div>
+
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => {
+                              setEditingProductId(item.productId)
+                              setNewItem({
+                                name: item.name,
+                                price: String(item.sellingPrice),
+                                categoryId: item.categoryId,
+                                description: item.description ?? "",
+
+                                hasPortionPricing: !!item.hasPortionPricing,
+                                mediumPrice: item.portionPrices?.MEDIUM != null ? String(item.portionPrices.MEDIUM) : "",
+                                largePrice: item.portionPrices?.LARGE != null ? String(item.portionPrices.LARGE) : "",
+                              })
+
+                              setRecipeLines(
+                                Array.isArray(item.recipe)
+                                  ? item.recipe.map((r) => ({ itemId: r.itemId, quantity: String(r.quantity) }))
+                                  : [],
+                              )
+
+                              setImageFile(null)
+                              setUploadError(null)
+                              setIsDialogOpen(true)
+                            }}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+
+                          <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => handleDelete(item.productId)}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="aspect-video rounded-lg overflow-hidden bg-muted flex items-center justify-center">
+                        {item.imageUrl ? (
+                          <img
+                            src={item.imageUrl}
+                            alt={item.name}
+                            className="h-full w-full object-cover"
+                            onError={(e) => {
+                              e.currentTarget.style.display = "none"
+                            }}
+                          />
+                        ) : (
+                          <div className="flex flex-col items-center justify-center text-muted-foreground">
+                            <UtensilsCrossed className="h-5 w-5 mb-1" />
+                            <span>No image available</span>
+                          </div>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </DashboardLayout>
+  )
+}
+
+export default MenuItems
+
