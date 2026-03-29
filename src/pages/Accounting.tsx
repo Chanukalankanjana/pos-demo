@@ -4,15 +4,86 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { DollarSign, TrendingUp, TrendingDown, Download, Plus, ArrowUpRight, ArrowDownRight } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  getAllInvoices,
+  createInvoice,
+  markInvoicePaid,
+  type CustomerInvoice,
+  type MealType,
+  DEFAULT_UNIT,
+} from "@/lib/invoicesApi";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { generatePDF } from "@/lib/pdfUtils";
 import { StatCard } from "@/components/Dashboard/StatCard";
 import { formatCurrency, formatCurrencyCompact } from "@/lib/utils";
 
+const mealLabels: Record<MealType, string> = {
+  breakfast: "Breakfast",
+  lunch: "Lunch",
+  dinner: "Dinner",
+};
+
 const Accounting = () => {
+  const [customerInvoices, setCustomerInvoices] = useState<CustomerInvoice[]>([]);
+  const [invForm, setInvForm] = useState({
+    customerName: "",
+    mealType: "lunch" as MealType,
+    qty: "1",
+    unitPrice: String(DEFAULT_UNIT.lunch),
+  });
+  const [pdfTarget, setPdfTarget] = useState<CustomerInvoice | null>(null);
+
+  useEffect(() => {
+    void getAllInvoices().then(setCustomerInvoices);
+  }, []);
+
+  useEffect(() => {
+    if (!pdfTarget) return;
+    const t = window.setTimeout(async () => {
+      try {
+        await generatePDF("customer-invoice-slip", `${pdfTarget.invoiceId}.pdf`);
+      } catch (e) {
+        console.error(e);
+      }
+      setPdfTarget(null);
+    }, 200);
+    return () => window.clearTimeout(t);
+  }, [pdfTarget]);
+
+  const handleCreateCustomerInvoice = async () => {
+    const qty = Number.parseFloat(invForm.qty);
+    const unitPrice = Number.parseFloat(invForm.unitPrice);
+    if (!invForm.customerName.trim() || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) {
+      return;
+    }
+    const created = await createInvoice({
+      customerName: invForm.customerName,
+      mealType: invForm.mealType,
+      qty,
+      unitPrice,
+    });
+    setCustomerInvoices((prev) => [created, ...prev]);
+    setInvForm({
+      customerName: "",
+      mealType: "lunch",
+      qty: "1",
+      unitPrice: String(DEFAULT_UNIT.lunch),
+    });
+    setPdfTarget(created);
+  };
+
+  const handleMarkPaid = async (invoiceId: string) => {
+    const updated = await markInvoicePaid(invoiceId);
+    setCustomerInvoices((prev) => prev.map((i) => (i.invoiceId === invoiceId ? updated : i)));
+  };
+
+  const handleDownloadInvoice = (inv: CustomerInvoice) => {
+    setPdfTarget(inv);
+  };
+
   const [recentTransactions, setRecentTransactions] = useState([
     { id: "TRX001", date: "2025-10-15", type: "income", category: "Sales", amount: 125750.00, description: "Table 5 - Dinner Service" },
     { id: "TRX002", date: "2025-10-15", type: "expense", category: "Inventory", amount: -45000.00, description: "Fresh Produce Delivery" },
@@ -256,10 +327,159 @@ const Accounting = () => {
           </Card>
         </div>
 
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Customer meal invoices</CardTitle>
+            <CardDescription>
+              Create an invoice with customer name, meal type (breakfast / lunch / dinner), and quantity. Download PDF after
+              saving; mark as paid when payment is received.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+              <div className="grid gap-2">
+                <Label htmlFor="ci-name">Customer name</Label>
+                <Input
+                  id="ci-name"
+                  value={invForm.customerName}
+                  onChange={(e) => setInvForm({ ...invForm, customerName: e.target.value })}
+                  placeholder="Name"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="ci-meal">Meal</Label>
+                <select
+                  id="ci-meal"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={invForm.mealType}
+                  onChange={(e) => {
+                    const m = e.target.value as MealType;
+                    setInvForm({
+                      ...invForm,
+                      mealType: m,
+                      unitPrice: String(DEFAULT_UNIT[m]),
+                    });
+                  }}
+                >
+                  <option value="breakfast">{mealLabels.breakfast}</option>
+                  <option value="lunch">{mealLabels.lunch}</option>
+                  <option value="dinner">{mealLabels.dinner}</option>
+                </select>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="ci-qty">Qty</Label>
+                <Input
+                  id="ci-qty"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={invForm.qty}
+                  onChange={(e) => setInvForm({ ...invForm, qty: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="ci-unit">Unit price (LKR)</Label>
+                <Input
+                  id="ci-unit"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={invForm.unitPrice}
+                  onChange={(e) => setInvForm({ ...invForm, unitPrice: e.target.value })}
+                />
+              </div>
+              <Button type="button" onClick={() => void handleCreateCustomerInvoice()}>
+                Save &amp; download PDF
+              </Button>
+            </div>
+
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Invoice</TableHead>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Meal</TableHead>
+                  <TableHead>Qty</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {customerInvoices.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-muted-foreground text-center py-6">
+                      No customer invoices yet.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  customerInvoices.map((inv) => (
+                    <TableRow key={inv.invoiceId}>
+                      <TableCell className="font-mono text-xs">{inv.invoiceId}</TableCell>
+                      <TableCell>{inv.customerName}</TableCell>
+                      <TableCell>{mealLabels[inv.mealType]}</TableCell>
+                      <TableCell>{inv.qty}</TableCell>
+                      <TableCell className="text-right font-semibold">{formatCurrency(inv.total)}</TableCell>
+                      <TableCell>
+                        <Badge variant={inv.status === "paid" ? "default" : "secondary"}>{inv.status}</Badge>
+                      </TableCell>
+                      <TableCell className="text-xs whitespace-nowrap">
+                        {new Date(inv.createdAt).toLocaleString()}
+                      </TableCell>
+                      <TableCell className="text-right space-x-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => handleDownloadInvoice(inv)}>
+                          PDF
+                        </Button>
+                        {inv.status === "pending" && (
+                          <Button type="button" size="sm" onClick={() => void handleMarkPaid(inv.invoiceId)}>
+                            Mark paid
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+
+        {pdfTarget && (
+          <div
+            id="customer-invoice-slip"
+            className="fixed w-[400px] bg-white p-8 text-black border shadow-lg"
+            style={{ left: -8000, top: 0, zIndex: 9999 }}
+          >
+            <h2 className="text-xl font-bold mb-1">Invoice</h2>
+            <p className="text-sm text-gray-600 mb-4">{pdfTarget.invoiceId}</p>
+            <div className="text-sm space-y-1 mb-4">
+              <p>
+                <strong>Customer:</strong> {pdfTarget.customerName}
+              </p>
+              <p>
+                <strong>Meal:</strong> {mealLabels[pdfTarget.mealType]}
+              </p>
+              <p>
+                <strong>Qty:</strong> {pdfTarget.qty} × {formatCurrency(pdfTarget.unitPrice)}
+              </p>
+              <p>
+                <strong>Total:</strong> {formatCurrency(pdfTarget.total)}
+              </p>
+              <p>
+                <strong>Status:</strong> {pdfTarget.status}
+              </p>
+              <p>
+                <strong>Date:</strong> {new Date(pdfTarget.createdAt).toLocaleString()}
+              </p>
+            </div>
+          </div>
+        )}
+
         <Card>
           <CardHeader>
             <CardTitle>Pending Invoices</CardTitle>
-            <CardDescription>Manage your payables and receivables</CardDescription>
+            <CardDescription>Vendor payables (demo)</CardDescription>
           </CardHeader>
           <CardContent>
             <Table>

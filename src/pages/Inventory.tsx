@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
+import { formatCurrency } from "@/lib/utils"
 import {
   createInventoryItem,
   deleteInventoryItem,
@@ -33,6 +34,7 @@ const Inventory = () => {
     itemName: "",
     quantity: "",
     lowStockThreshold: "",
+    costPerUnit: "",
   })
 
   const [editOpen, setEditOpen] = useState(false)
@@ -41,6 +43,7 @@ const Inventory = () => {
     itemName: "",
     quantity: "",
     lowStockThreshold: "",
+    costPerUnit: "",
   })
 
   const load = async () => {
@@ -79,19 +82,27 @@ const Inventory = () => {
     return { totalItems: items.length, low, critical, totalQty }
   }, [items])
 
-  const validateAndParse = (body: { itemName: string; quantity: string; lowStockThreshold: string }) => {
+  const validateAndParse = (body: {
+    itemName: string
+    quantity: string
+    lowStockThreshold: string
+    costPerUnit: string
+  }) => {
     const itemName = body.itemName.trim()
     const quantity = Number(body.quantity)
     const lowStockThreshold = Number(body.lowStockThreshold)
+    const costPerUnit = Number(body.costPerUnit)
 
     if (!itemName) return { ok: false as const, message: "Item name is required" }
     if (!Number.isFinite(quantity) || quantity < 0) return { ok: false as const, message: "Quantity must be 0 or more" }
     if (!Number.isFinite(lowStockThreshold) || lowStockThreshold < 0)
       return { ok: false as const, message: "Low stock threshold must be 0 or more" }
+    if (!Number.isFinite(costPerUnit) || costPerUnit < 0)
+      return { ok: false as const, message: "Cost per unit (LKR) must be 0 or more" }
     if (lowStockThreshold > quantity)
       return { ok: false as const, message: "Low stock threshold cannot be greater than quantity" }
 
-    return { ok: true as const, value: { itemName, quantity, lowStockThreshold } }
+    return { ok: true as const, value: { itemName, quantity, lowStockThreshold, costPerUnit } }
   }
 
   const handleAddItem = async () => {
@@ -104,7 +115,7 @@ const Inventory = () => {
     try {
       const created = await createInventoryItem(parsed.value)
       setItems((prev) => [created, ...prev])
-      setNewItem({ itemName: "", quantity: "", lowStockThreshold: "" })
+      setNewItem({ itemName: "", quantity: "", lowStockThreshold: "", costPerUnit: "" })
       setAddOpen(false)
       toast.success("Inventory item created")
     } catch (e) {
@@ -119,6 +130,7 @@ const Inventory = () => {
       itemName: item.itemName,
       quantity: String(item.quantity),
       lowStockThreshold: String(item.lowStockThreshold),
+      costPerUnit: String(item.costPerUnit ?? 0),
     })
     setEditOpen(true)
   }
@@ -215,6 +227,20 @@ const Inventory = () => {
                     onChange={(e) => setNewItem({ ...newItem, lowStockThreshold: e.target.value })}
                     placeholder="e.g. 5"
                   />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="item-cost">Cost per kg / L (LKR)</Label>
+                  <Input
+                    id="item-cost"
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    value={newItem.costPerUnit}
+                    onChange={(e) => setNewItem({ ...newItem, costPerUnit: e.target.value })}
+                    placeholder="e.g. 180"
+                  />
+                  <p className="text-xs text-muted-foreground">Used to calculate menu recipe cost.</p>
                 </div>
               </div>
 
@@ -316,7 +342,7 @@ const Inventory = () => {
                         <div className="flex-1">
                           <p className="font-medium">{item.itemName}</p>
                           <p className="text-sm text-muted-foreground">
-                            Low stock threshold: {item.lowStockThreshold}
+                            Low: {item.lowStockThreshold} · Cost/kg: {formatCurrency(item.costPerUnit ?? 0)}
                           </p>
                         </div>
                       </div>
@@ -386,6 +412,18 @@ const Inventory = () => {
                   inputMode="decimal"
                   value={editForm.lowStockThreshold}
                   onChange={(e) => setEditForm({ ...editForm, lowStockThreshold: e.target.value })}
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="edit-cost">Cost per kg / L (LKR)</Label>
+                <Input
+                  id="edit-cost"
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  value={editForm.costPerUnit}
+                  onChange={(e) => setEditForm({ ...editForm, costPerUnit: e.target.value })}
                 />
               </div>
             </div>

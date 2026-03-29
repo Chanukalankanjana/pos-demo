@@ -13,16 +13,79 @@ import { getAllProducts, type ProductResponseDto, type PortionSize } from "@/lib
 import { getAllCategories, type CategoryResponseDto } from "@/lib/categoriesApi"
 import { createOrder, type Kitchen, type OrderType, type PaymentMethod } from "@/lib/ordersApi"
 import { createOrderItem, deleteOrderItem, getAllOrderItems } from "@/lib/orderItemsApi"
+import {
+  SinhalaReceiptDialog,
+  type KitchenTicketPayload,
+  type OrderBillsPayload,
+} from "@/components/POS/SinhalaReceiptDialog"
+
+const paymentLabels: Record<PaymentMethod, string> = {
+  CASH: "Cash",
+  CARD: "Card",
+  BANK_TRANSFER: "Bank transfer",
+  CASH_ON_DELIVERY: "Cash on delivery",
+}
+
+const orderTypeLabels: Record<OrderType, string> = {
+  DINE_IN: "Dine in",
+  TAKE_AWAY: "Take away",
+  DELIVERY: "Delivery",
+}
+
+const orderTypeLabelSi: Record<OrderType, string> = {
+  DINE_IN: "ආපන ශාලාව",
+  TAKE_AWAY: "නිවසට ගෙන යාම",
+  DELIVERY: "ඩිලිවරි",
+}
 
 interface CartItem {
   lineKey: string
   productId: number
   name: string
+  /** Station from menu item — used to split KOTs */
+  kitchen: Kitchen
+  nameSinhala: string | null
   unitPrice: number
   quantity: number
   portionSize?: PortionSize
   imageUrl?: string
   description?: string
+}
+
+function portionLabelSi(p?: PortionSize): string | undefined {
+  if (p === "MEDIUM") return "මධ්‍යම"
+  if (p === "LARGE") return "විශාල"
+  return undefined
+}
+
+function buildKitchenTickets(
+  cart: CartItem[],
+  orderId: number,
+  tableLabel: string,
+  orderType: OrderType,
+): KitchenTicketPayload[] {
+  const map = new Map<Kitchen, KitchenTicketPayload["lines"]>()
+  for (const c of cart) {
+    const list = map.get(c.kitchen) ?? []
+    list.push({
+      nameEn: c.name,
+      nameSi: c.nameSinhala,
+      qty: c.quantity,
+      portionSi: portionLabelSi(c.portionSize),
+    })
+    map.set(c.kitchen, list)
+  }
+  const stationOrder: Kitchen[] = ["KITCHEN_1", "KITCHEN_2"]
+  return stationOrder
+    .filter((k) => (map.get(k)?.length ?? 0) > 0)
+    .map((k) => ({
+      kitchen: k,
+      kitchenBadgeSi: k === "KITCHEN_1" ? "කුස්සිය 1" : "කුස්සිය 2",
+      orderId,
+      tableLabel,
+      orderTypeLabelSi: orderTypeLabelSi[orderType],
+      lines: map.get(k)!,
+    }))
 }
 
 const cartKey = (productId: number, portionSize?: PortionSize) => `${productId}:${portionSize ?? "DEFAULT"}`
@@ -42,8 +105,9 @@ const POS = () => {
   const [activeTab, setActiveTab] = useState("all")
 
   const [orderType, setOrderType] = useState<OrderType>("DINE_IN")
-  const [kitchen, setKitchen] = useState<Kitchen>("KITCHEN_1")
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH")
+  const [receiptOpen, setReceiptOpen] = useState(false)
+  const [lastReceipt, setLastReceipt] = useState<OrderBillsPayload | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -98,6 +162,8 @@ const POS = () => {
         lineKey,
         productId: item.productId,
         name: item.name,
+        kitchen: item.kitchen === "KITCHEN_2" ? "KITCHEN_2" : "KITCHEN_1",
+        nameSinhala: item.nameSinhala ?? null,
         unitPrice,
         quantity: 1,
         portionSize,
@@ -156,6 +222,8 @@ const POS = () => {
     const nonPortionLines = cart.filter((c) => !c.portionSize)
 
     try {
+      const orderKitchen: Kitchen = cart[0]!.kitchen
+
       const order = await createOrder({
         tableNumber,
         totalAmount,
@@ -164,7 +232,7 @@ const POS = () => {
         paymentMethod,
         status: "PAID",
         orderType,
-        kitchen,
+        kitchen: orderKitchen,
         items,
       })
 
@@ -216,6 +284,33 @@ const POS = () => {
           ),
         )
       }
+
+      const tableLabel = orderType === "DINE_IN" ? String(selectedTable) : "—"
+      const portionLabel = (p?: PortionSize) =>
+        p === "MEDIUM" ? "Medium" : p === "LARGE" ? "Large" : undefined
+
+      const lines = cart.map((c) => ({
+        name: c.name,
+        qty: c.quantity,
+        unitPrice: c.unitPrice,
+        lineTotal: Number((c.unitPrice * c.quantity).toFixed(2)),
+        portion: portionLabel(c.portionSize),
+      }))
+
+      setLastReceipt({
+        customer: {
+          orderId: order.orderId,
+          lines,
+          subtotal,
+          taxAmount,
+          total: totalAmount,
+          tableLabel,
+          paymentLabel: paymentLabels[paymentMethod],
+          orderTypeLabel: orderTypeLabels[orderType],
+        },
+        kitchenTickets: buildKitchenTickets(cart, order.orderId, tableLabel, orderType),
+      })
+      setReceiptOpen(true)
 
       toast.success(`Order ${order.orderId} placed! Total: ${formatCurrency(totalAmount)}`)
       setCart([])
@@ -332,6 +427,8 @@ const POS = () => {
 
   return (
     <DashboardLayout>
+      <SinhalaReceiptDialog open={receiptOpen} onOpenChange={setReceiptOpen} payload={lastReceipt} />
+
       <div className="h-screen flex flex-col bg-gradient-to-br from-background to-muted/20">
         <div className="p-4 pb-3">
           <div className="flex items-center justify-between">
@@ -430,34 +527,25 @@ const POS = () => {
                       </select>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-sm font-medium text-muted-foreground mb-1 block">Kitchen</label>
-                        <select
-                          value={kitchen}
-                          onChange={(e) => setKitchen(e.target.value as Kitchen)}
-                          className="flex h-10 w-full rounded-xl border-2 border-input bg-background px-3 py-2 text-sm ring-offset-background"
-                        >
-                          <option value="KITCHEN_1">Kitchen 1</option>
-                          <option value="KITCHEN_2">Kitchen 2</option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="text-sm font-medium text-muted-foreground mb-1 block">Payment</label>
-                        <select
-                          value={paymentMethod}
-                          onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-                          className="flex h-10 w-full rounded-xl border-2 border-input bg-background px-3 py-2 text-sm ring-offset-background"
-                        >
-                          <option value="CASH">Cash</option>
-                          <option value="CARD">Card</option>
-                          <option value="PAYPAL">PayPal</option>
-                          <option value="BANK_TRANSFER">Bank Transfer</option>
-                          <option value="CASH_ON_DELIVERY">Cash on Delivery</option>
-                        </select>
-                      </div>
+                    <div>
+                      <label className="text-sm font-medium text-muted-foreground mb-1 block">Payment</label>
+                      <select
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                        className="flex h-10 w-full rounded-xl border-2 border-input bg-background px-3 py-2 text-sm ring-offset-background"
+                      >
+                        <option value="CASH">Cash</option>
+                        <option value="CARD">Card</option>
+                        <option value="BANK_TRANSFER">Bank Transfer</option>
+                        <option value="CASH_ON_DELIVERY">Cash on Delivery</option>
+                      </select>
                     </div>
+
+                    <p className="text-xs text-muted-foreground rounded-lg border border-muted/60 bg-muted/20 px-3 py-2">
+                      Each menu item is assigned to Kitchen 1 or Kitchen 2 in{" "}
+                      <span className="font-medium text-foreground">Menu Items</span>. The POS splits printed kitchen
+                      tickets by station automatically.
+                    </p>
 
                     <div>
                       <label className="text-sm font-medium text-muted-foreground mb-1 block">

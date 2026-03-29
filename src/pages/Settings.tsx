@@ -1,4 +1,4 @@
-import { useCallback } from "react"
+import { useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { DashboardLayout } from "@/components/Layout/DashboardLayout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -16,34 +16,17 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import { useState } from "react"
-import { useNavigate } from "react-router-dom"
-import { 
-  Settings as SettingsIcon, 
-  User, 
-  Bell, 
-  Shield, 
-  Palette, 
-  Database, 
+import {
+  Settings as SettingsIcon,
+  User,
   Globe,
   Save,
   Upload,
   Download,
-  Trash2,
-  LogOut
+  LogOut,
 } from "lucide-react"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
 
 const Settings = () => {
   const navigate = useNavigate()
@@ -53,17 +36,12 @@ const Settings = () => {
   const handleLogout = async () => {
     setIsLoggingOut(true)
     try {
-      await fetch("/api/security/logout", {
-        method: "POST",
-        credentials: "include",
-      })
-    } catch {
-      // Clear session even if request fails
-    } finally {
       localStorage.removeItem("isLoggedIn")
       localStorage.removeItem("token")
       localStorage.removeItem("user")
-      navigate("/login", { replace: true })
+      navigate("/pos", { replace: true })
+    } finally {
+      setIsLoggingOut(false)
     }
   }
 

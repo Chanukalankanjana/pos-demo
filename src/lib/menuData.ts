@@ -1,5 +1,8 @@
 export type MenuCategory = "starters" | "mains" | "desserts" | "drinks" | "other"
 
+/** Station that prepares this menu item (used for split KOT printing). */
+export type MenuKitchen = "KITCHEN_1" | "KITCHEN_2"
+
 export interface MenuItem {
   id: string
   name: string
@@ -7,6 +10,9 @@ export interface MenuItem {
   category: MenuCategory
   image: string
   description: string
+  kitchen?: MenuKitchen
+  /** Shown on Sinhala kitchen tickets; optional. */
+  nameSinhala?: string
 }
 
 export const defaultMenuItems: MenuItem[] = [
@@ -81,6 +87,8 @@ export const defaultMenuItems: MenuItem[] = [
     category: "mains",
     image: "/chicken-curry.png",
     description: "Slow‑cooked chicken curry with Sri Lankan spices, coconut milk, and fragrant herbs.",
+    kitchen: "KITCHEN_1",
+    nameSinhala: "චිකන් කරි",
   },
   {
     id: "10",
@@ -105,6 +113,26 @@ export const defaultMenuItems: MenuItem[] = [
     category: "desserts",
     image: "/chocolate-cake.png",
     description: "Moist chocolate sponge layered with rich fudge frosting for true chocoholics.",
+  },
+  {
+    id: "13",
+    name: "Rice & Curry",
+    price: 1200,
+    category: "mains",
+    image: "/chicken-curry.png",
+    description: "Steamed rice with mixed curries — routes to Kitchen 1 in the demo.",
+    kitchen: "KITCHEN_1",
+    nameSinhala: "රයිස් සහ කරි",
+  },
+  {
+    id: "14",
+    name: "Chicken Koththu",
+    price: 1350,
+    category: "mains",
+    image: "/chicken-curry.png",
+    description: "Chopped roti with chicken and vegetables — routes to Kitchen 2 in the demo.",
+    kitchen: "KITCHEN_2",
+    nameSinhala: "චිකන් කොත්තු",
   },
 ]
 
@@ -135,6 +163,8 @@ export const loadMenuItems = (): MenuItem[] => {
         category: item.category ?? fallback?.category ?? "other",
         image: item.image ?? fallback?.image ?? "/placeholder.svg",
         description,
+        kitchen: item.kitchen ?? fallback?.kitchen,
+        nameSinhala: item.nameSinhala ?? fallback?.nameSinhala,
       }
     })
   } catch {

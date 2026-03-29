@@ -156,7 +156,7 @@ const Dashboard = () => {
       const subLabel =
         String(o.orderType).toUpperCase() === "DINE_IN"
           ? `Table ${o.tableNumber ?? "-"}`
-          : String(o.orderType).replaceAll("_", " ")
+          : String(o.orderType).replace(/_/g, " ")
 
       return {
         idLabel: `Order #${o.orderId}`,
@@ -273,7 +273,7 @@ const Dashboard = () => {
             <StatCard
               title="Active Tables"
               value={String(activeTables)}
-              change="Dine-in (NEW)"
+              change="Dine-in (pending)"
               trend="up"
               icon={Users}
               color="accent"

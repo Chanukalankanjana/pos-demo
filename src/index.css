@@ -170,3 +170,26 @@
     box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
   }
 }
+
+.kot-title {
+  font-size: 1.4rem;
+  border-bottom: 2px solid #000;
+  padding-bottom: 5px;
+  margin-bottom: 10px;
+  text-align: center;
+  font-weight: bold;
+}
+
+.kot-table {
+  font-size: 1.1rem; 
+  line-height: 1.8;
+}
+
+.prep-note {
+  font-style: italic;
+  font-size: 0.85rem;
+  margin-top: 20px;
+  text-align: center;
+  border-top: 1px dashed #666;
+  padding-top: 10px;
+}

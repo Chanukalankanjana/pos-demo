@@ -1,126 +1,138 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { DashboardLayout } from "@/components/Layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { UserPlus, DollarSign, Clock } from "lucide-react";
+import { UserPlus, DollarSign, Calendar, ClipboardCheck } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatCurrency, formatCurrencyCompact } from "@/lib/utils";
-import { UpgradeModal } from "@/components/Billing/UpgradeModal";
-import { useFeature } from "@/hooks/useFeature";
+import {
+  createEmployee,
+  deleteEmployee,
+  getAllEmployees,
+  PAID_LEAVE_DAYS_PER_MONTH,
+  type Employee,
+} from "@/lib/employeesApi";
+
+/** Rough calendar-month payroll if every paid day matched a worked or paid-leave day (see Attendance). */
+const ASSUMED_WORK_DAYS_PER_MONTH = 22;
 
 const Staff = () => {
-  const { isEnabled } = useFeature("staffHr");
-  const [showUpgrade, setShowUpgrade] = useState(false);
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    if (!isEnabled) {
-      setShowUpgrade(true);
-    }
-  }, [isEnabled]);
-
-  const [staffMembers, setStaffMembers] = useState([
-    { name: "John Smith", role: "Head Chef", status: "active", salary: 125000, hours: "160" },
-    { name: "Sarah Johnson", role: "Sous Chef", status: "active", salary: 95000, hours: "158" },
-    { name: "Mike Brown", role: "Senior Waiter", status: "active", salary: 65000, hours: "152" },
-    { name: "Emily Davis", role: "Restaurant Manager", status: "active", salary: 135000, hours: "160" },
-    { name: "James Wilson", role: "Bartender", status: "active", salary: 75000, hours: "145" },
-    { name: "Lisa Anderson", role: "Host", status: "off", salary: 55000, hours: "120" },
-  ]);
+  const [staffMembers, setStaffMembers] = useState<Employee[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const [newStaff, setNewStaff] = useState({
-    name: '',
-    role: '',
-    salary: '',
-    hours: ''
+    name: "",
+    role: "",
+    paymentPerDay: "",
   });
 
-  const handleAddStaff = () => {
-    const staff = {
+  const load = async () => {
+    setLoading(true);
+    try {
+      const list = await getAllEmployees();
+      setStaffMembers(list);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const estimatedMonthlyPayroll = useMemo(() => {
+    return staffMembers.reduce((sum, e) => sum + e.paymentPerDay * ASSUMED_WORK_DAYS_PER_MONTH, 0);
+  }, [staffMembers]);
+
+  const handleAddStaff = async () => {
+    const rate = Number.parseFloat(newStaff.paymentPerDay);
+    if (!newStaff.name.trim() || !newStaff.role.trim() || !Number.isFinite(rate) || rate < 0) return;
+    await createEmployee({
       name: newStaff.name,
       role: newStaff.role,
-      status: "active",
-      salary: parseInt(newStaff.salary),
-      hours: newStaff.hours
-    };
-    setStaffMembers([...staffMembers, staff]);
-    setNewStaff({ name: '', role: '', salary: '', hours: '' });
+      paymentPerDay: rate,
+    });
+    setNewStaff({ name: "", role: "", paymentPerDay: "" });
+    await load();
   };
+
+  const handleRemove = async (id: string) => {
+    if (!window.confirm("Remove this employee? Attendance history for this ID stays in local storage.")) return;
+    await deleteEmployee(id);
+    await load();
+  };
+
   return (
     <DashboardLayout>
       <div className="p-8 relative">
-        <div className="mb-8 flex items-center justify-between">
+        <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-3xl font-bold">Staff & HR Management</h1>
-            <p className="text-muted-foreground mt-1">Manage your team and payroll</p>
+            <h1 className="text-3xl font-bold">Staff &amp; HR Management</h1>
+            <p className="text-muted-foreground mt-1">
+              Add employees with <strong>daily pay</strong> and <strong>role</strong>. Each staff member gets up to{" "}
+              <strong>{PAID_LEAVE_DAYS_PER_MONTH} paid leave days per month</strong>; extra leave days in that month are{" "}
+              <strong>unpaid</strong>. Record daily status in{" "}
+              <Link to="/attendance" className="text-primary font-medium underline underline-offset-2">
+                Attendance
+              </Link>
+              .
+            </p>
           </div>
           <Dialog>
             <DialogTrigger asChild>
-              <Button className="gap-2">
+              <Button className="gap-2 shrink-0">
                 <UserPlus className="w-4 h-4" />
-                Add Staff Member
+                Add employee
               </Button>
             </DialogTrigger>
             <DialogContent className="sm:max-w-[425px]">
               <DialogHeader>
-                <DialogTitle>Add New Staff Member</DialogTitle>
+                <DialogTitle>Add employee</DialogTitle>
               </DialogHeader>
               <div className="grid gap-4 py-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="staff-name">Full Name</Label>
+                  <Label htmlFor="staff-name">Full name</Label>
                   <Input
                     id="staff-name"
                     value={newStaff.name}
-                    onChange={(e) => setNewStaff({...newStaff, name: e.target.value})}
-                    placeholder="Enter staff member name"
+                    onChange={(e) => setNewStaff({ ...newStaff, name: e.target.value })}
+                    placeholder="Employee name"
                   />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="staff-role">Role</Label>
-                  <select
+                  <Input
                     id="staff-role"
                     value={newStaff.role}
-                    onChange={(e) => setNewStaff({...newStaff, role: e.target.value})}
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
-                  >
-                    <option value="">Select role</option>
-                    <option value="Head Chef">Head Chef</option>
-                    <option value="Sous Chef">Sous Chef</option>
-                    <option value="Senior Waiter">Senior Waiter</option>
-                    <option value="Waiter">Waiter</option>
-                    <option value="Restaurant Manager">Restaurant Manager</option>
-                    <option value="Bartender">Bartender</option>
-                    <option value="Host">Host</option>
-                    <option value="Cashier">Cashier</option>
-                  </select>
+                    onChange={(e) => setNewStaff({ ...newStaff, role: e.target.value })}
+                    placeholder="e.g. Head Chef, Cashier"
+                  />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="staff-salary">Salary (LKR)</Label>
+                  <Label htmlFor="staff-day">Payment per day (LKR)</Label>
                   <Input
-                    id="staff-salary"
+                    id="staff-day"
                     type="number"
-                    value={newStaff.salary}
-                    onChange={(e) => setNewStaff({...newStaff, salary: e.target.value})}
-                    placeholder="Enter salary"
+                    min="0"
+                    step="1"
+                    value={newStaff.paymentPerDay}
+                    onChange={(e) => setNewStaff({ ...newStaff, paymentPerDay: e.target.value })}
+                    placeholder="e.g. 4500"
                   />
                 </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="staff-hours">Hours per Month</Label>
-                  <Input
-                    id="staff-hours"
-                    value={newStaff.hours}
-                    onChange={(e) => setNewStaff({...newStaff, hours: e.target.value})}
-                    placeholder="Enter hours per month"
-                  />
-                </div>
+                <p className="text-xs text-muted-foreground rounded-md border border-muted p-3 leading-relaxed">
+                  Leave pay rule: only the first <strong>{PAID_LEAVE_DAYS_PER_MONTH}</strong> leave days in a calendar month are
+                  paid (same rate as a worked day). Additional leave days in that month are <strong>unpaid</strong>. Use the
+                  Attendance page to mark Present / Leave / Absent per day.
+                </p>
               </div>
               <div className="flex justify-end gap-2">
                 <Button variant="outline">Cancel</Button>
-                <Button onClick={handleAddStaff}>Add Staff Member</Button>
+                <Button onClick={() => void handleAddStaff()}>Save</Button>
               </div>
             </DialogContent>
           </Dialog>
@@ -131,9 +143,9 @@ const Staff = () => {
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-muted-foreground">Total Staff</p>
-                  <p className="text-3xl font-bold mt-1">24</p>
-                  <p className="text-sm text-success mt-1">6 on duty now</p>
+                  <p className="text-sm text-muted-foreground">Employees</p>
+                  <p className="text-3xl font-bold mt-1">{loading ? "—" : staffMembers.length}</p>
+                  <p className="text-sm text-muted-foreground mt-1">Synced with Attendance</p>
                 </div>
                 <UserPlus className="w-10 h-10 text-primary" />
               </div>
@@ -143,9 +155,13 @@ const Staff = () => {
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-muted-foreground">Monthly Payroll</p>
-                  <p className="text-3xl font-bold mt-1">{formatCurrencyCompact(1850000)}</p>
-                  <p className="text-sm text-muted-foreground mt-1">Due in 5 days</p>
+                  <p className="text-sm text-muted-foreground">Est. monthly payroll (demo)</p>
+                  <p className="text-3xl font-bold mt-1">
+                    {loading ? "—" : formatCurrencyCompact(estimatedMonthlyPayroll)}
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    ~{ASSUMED_WORK_DAYS_PER_MONTH} paid days × daily rate (before real attendance)
+                  </p>
                 </div>
                 <DollarSign className="w-10 h-10 text-success" />
               </div>
@@ -155,131 +171,86 @@ const Staff = () => {
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-muted-foreground">Total Hours (This Month)</p>
-                  <p className="text-3xl font-bold mt-1">3,456</p>
-                  <p className="text-sm text-accent mt-1">+8% from last month</p>
+                  <p className="text-sm text-muted-foreground">Paid leave / month</p>
+                  <p className="text-3xl font-bold mt-1">{PAID_LEAVE_DAYS_PER_MONTH} days</p>
+                  <p className="text-sm text-muted-foreground mt-1">More leave days unpaid</p>
                 </div>
-                <Clock className="w-10 h-10 text-accent" />
+                <Calendar className="w-10 h-10 text-accent" />
               </div>
             </CardContent>
           </Card>
         </div>
 
-        <Card>
+        <Card className="mb-6">
           <CardHeader>
-            <CardTitle>Staff Members</CardTitle>
+            <CardTitle>Employees</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              {staffMembers.map((staff) => (
-                <div key={staff.name} className="flex items-center justify-between p-4 bg-muted rounded-lg">
-                  <div className="flex items-center gap-4 flex-1">
-                    <div className="w-12 h-12 rounded-full bg-accent text-accent-foreground flex items-center justify-center font-bold">
-                      {staff.name.split(' ').map(n => n[0]).join('')}
+            {loading ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">Loading…</p>
+            ) : (
+              <div className="space-y-4">
+                {staffMembers.map((staff) => (
+                  <div
+                    key={staff.employeeId}
+                    className="flex items-center justify-between p-4 bg-muted rounded-lg flex-wrap gap-3"
+                  >
+                    <div className="flex items-center gap-4 flex-1 min-w-[200px]">
+                      <div className="w-12 h-12 rounded-full bg-accent text-accent-foreground flex items-center justify-center font-bold text-sm">
+                        {staff.name
+                          .split(" ")
+                          .filter(Boolean)
+                          .map((n) => n[0])
+                          .join("")
+                          .slice(0, 2)
+                          .toUpperCase()}
+                      </div>
+                      <div>
+                        <p className="font-semibold">{staff.name}</p>
+                        <p className="text-sm text-muted-foreground">{staff.role}</p>
+                        <p className="text-xs text-muted-foreground font-mono">{staff.employeeId}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-semibold">{staff.name}</p>
-                      <p className="text-sm text-muted-foreground">{staff.role}</p>
+                    <div className="flex items-center gap-4 flex-wrap">
+                      <div className="text-right">
+                        <p className="text-sm text-muted-foreground">Per day</p>
+                        <p className="font-semibold">{formatCurrency(staff.paymentPerDay)}</p>
+                      </div>
+                      <Badge variant="secondary" className="whitespace-nowrap">
+                        Attendance linked
+                      </Badge>
+                      <Button variant="destructive" size="sm" onClick={() => void handleRemove(staff.employeeId)}>
+                        Remove
+                      </Button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-8">
-                    <div className="text-right">
-                      <p className="text-sm text-muted-foreground">Monthly Salary</p>
-                      <p className="font-semibold">{formatCurrency(staff.salary)}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm text-muted-foreground">Hours</p>
-                      <p className="font-semibold">{staff.hours}h</p>
-                    </div>
-                    <Badge variant={staff.status === "active" ? "default" : "secondary"}>
-                      {staff.status === "active" ? "On Duty" : "Off Duty"}
-                    </Badge>
-                    <Button variant="outline" size="sm">View Details</Button>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+                {staffMembers.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-8">No employees yet. Add your first team member.</p>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Upcoming Shifts</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {[
-                  { name: "Morning Shift", time: "8:00 AM - 2:00 PM", staff: 8 },
-                  { name: "Lunch Shift", time: "11:00 AM - 4:00 PM", staff: 12 },
-                  { name: "Evening Shift", time: "4:00 PM - 11:00 PM", staff: 15 },
-                  { name: "Night Shift", time: "9:00 PM - 1:00 AM", staff: 6 },
-                ].map((shift) => (
-                  <div key={shift.name} className="flex items-center justify-between p-4 bg-muted rounded-lg">
-                    <div>
-                      <p className="font-medium">{shift.name}</p>
-                      <p className="text-sm text-muted-foreground">{shift.time}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-semibold text-accent">{shift.staff} Staff</p>
-                      <Button variant="ghost" size="sm" className="mt-1">Edit</Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Leave Requests</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {[
-                  { name: "Mike Brown", dates: "Dec 24-26", status: "pending" },
-                  { name: "Sarah Johnson", dates: "Dec 31 - Jan 2", status: "pending" },
-                  { name: "Lisa Anderson", dates: "Jan 15-17", status: "approved" },
-                  { name: "James Wilson", dates: "Jan 20-22", status: "pending" },
-                ].map((request) => (
-                  <div key={`${request.name}-${request.dates}`} className="flex items-center justify-between p-4 bg-muted rounded-lg">
-                    <div>
-                      <p className="font-medium">{request.name}</p>
-                      <p className="text-sm text-muted-foreground">{request.dates}</p>
-                    </div>
-                    <div className="flex gap-2">
-                      {request.status === "pending" ? (
-                        <>
-                          <Button variant="outline" size="sm" className="bg-success text-success-foreground">
-                            Approve
-                          </Button>
-                          <Button variant="outline" size="sm" className="bg-destructive text-destructive-foreground">
-                            Deny
-                          </Button>
-                        </>
-                      ) : (
-                        <Badge variant="default">Approved</Badge>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <UpgradeModal
-          featureKey="staffHr"
-          open={showUpgrade}
-          onOpenChange={(open) => {
-            setShowUpgrade(open);
-            if (!open && !isEnabled) {
-              const fallback = "/pos";
-              const last = sessionStorage.getItem("lastUnlockedRoute") || fallback;
-              navigate(last, { replace: true });
-            }
-          }}
-        />
+        <Card className="max-w-2xl">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ClipboardCheck className="w-5 h-5" />
+              Attendance portal
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm text-muted-foreground">
+            <p>
+              Daily <strong className="text-foreground">Present</strong>, <strong className="text-foreground">Leave</strong>, or{" "}
+              <strong className="text-foreground">Absent</strong> marks drive the monthly payroll table. Leave days beyond{" "}
+              {PAID_LEAVE_DAYS_PER_MONTH} per month do not add to paid days.
+            </p>
+            <Button asChild variant="default">
+              <Link to="/attendance">Open Attendance</Link>
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     </DashboardLayout>
   );

@@ -33,7 +33,7 @@ import {
 import { getAllOrderItems, type OrderItemResponseDto } from "@/lib/orderItemsApi"
 
 const statusLabels: Record<OrderStatus, string> = {
-  NEW: "New",
+  NEW: "Pending",
   PAID: "Paid",
   CANCELLED: "Cancelled",
   UPDATED: "Updated",
@@ -88,7 +88,8 @@ function normalizeOrderStatus(value: unknown): OrderStatus {
 
 function normalizePaymentMethod(value: unknown): PaymentMethod {
   const v = String(value ?? "").trim().toUpperCase()
-  if (v === "CASH" || v === "CARD" || v === "PAYPAL" || v === "BANK_TRANSFER" || v === "CASH_ON_DELIVERY") return v
+  if (v === "PAYPAL") return "CASH"
+  if (v === "CASH" || v === "CARD" || v === "BANK_TRANSFER" || v === "CASH_ON_DELIVERY") return v
   return "CASH"
 }
 
@@ -219,7 +220,7 @@ export default function Orders() {
                 All ({filteredBySearch.length})
               </TabsTrigger>
               <TabsTrigger value="new" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-modern">
-                New ({newOrders.length})
+                Pending ({newOrders.length})
               </TabsTrigger>
               <TabsTrigger value="paid" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-modern">
                 Paid ({paidOrders.length})
@@ -338,11 +339,14 @@ function OrderCard({
       </div>
 
       <CardHeader className="pb-2 pt-3 px-4">
-        <div className="flex items-center justify-between">
+        <p className="text-sm font-medium text-muted-foreground mb-2">
+          {order.orderType === "DINE_IN" ? `Table ${order.tableNumber ?? "-"}` : String(order.orderType).replace(/_/g, " ")}
+        </p>
+        <div className="flex items-center justify-between gap-2">
           <CardTitle className="text-lg font-semibold">
             <span className="text-primary">Order #{order.orderId}</span>
           </CardTitle>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 shrink-0">
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit} title="Edit">
               <Pencil className="h-4 w-4" />
             </Button>
@@ -351,9 +355,6 @@ function OrderCard({
             </Button>
           </div>
         </div>
-        <p className="text-sm font-medium text-muted-foreground">
-          {order.orderType === "DINE_IN" ? `Table ${order.tableNumber ?? "-"}` : order.orderType}
-        </p>
       </CardHeader>
 
       <CardContent className="px-4 pb-4">
@@ -478,7 +479,6 @@ function EditOrderDialog({
             >
               <option value="CASH">CASH</option>
               <option value="CARD">CARD</option>
-              <option value="PAYPAL">PAYPAL</option>
               <option value="BANK_TRANSFER">BANK_TRANSFER</option>
               <option value="CASH_ON_DELIVERY">CASH_ON_DELIVERY</option>
             </select>
@@ -491,7 +491,7 @@ function EditOrderDialog({
               value={status}
               onChange={(e) => setStatus(e.target.value as OrderStatus)}
             >
-              <option value="NEW">NEW</option>
+              <option value="NEW">Pending</option>
               <option value="PAID">PAID</option>
               <option value="CANCELLED">CANCELLED</option>
               <option value="UPDATED">UPDATED</option>

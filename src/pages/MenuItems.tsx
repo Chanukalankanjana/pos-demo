@@ -19,6 +19,8 @@ import {
 } from "@/lib/productsApi"
 import { createCategory, getAllCategories, type CategoryResponseDto } from "@/lib/categoriesApi"
 import { getAllInventoryItems, type InventoryItemResponseDto } from "@/lib/inventoryApi"
+import type { Kitchen } from "@/lib/ordersApi"
+import { computeRecipeCostLkr } from "@/lib/recipeCost"
 
 type RecipeLineForm = { itemId: number | ""; quantity: string }
 
@@ -33,8 +35,10 @@ const MenuItems = () => {
 
   const [newItem, setNewItem] = useState({
     name: "",
+    nameSinhala: "",
     price: "", // base/default price
     categoryId: "" as number | "",
+    kitchen: "KITCHEN_1" as Kitchen,
     description: "",
 
     hasPortionPricing: false,
@@ -94,7 +98,7 @@ const MenuItems = () => {
       } catch (e) {
         console.error(e)
         if (!cancelled) {
-          setUploadError("Failed to load categories/products/inventory. Check backend and try again.")
+          setUploadError("Failed to load categories, products, or inventory. Please refresh the page.")
           setCategories([]) // removed hardcoded categories
           setInventoryItems([])
         }
@@ -111,8 +115,10 @@ const MenuItems = () => {
   const resetForm = () => {
     setNewItem({
       name: "",
+      nameSinhala: "",
       price: "",
       categoryId: "",
+      kitchen: "KITCHEN_1",
       description: "",
       hasPortionPricing: false,
       mediumPrice: "",
@@ -147,7 +153,7 @@ const MenuItems = () => {
       setIsAddingCategory(false)
     } catch (e) {
       console.error(e)
-      setUploadError("Failed to create category. Check backend and try again.")
+      setUploadError("Failed to create category. Please try again.")
     } finally {
       setIsSavingCategory(false)
     }
@@ -158,6 +164,20 @@ const MenuItems = () => {
     for (const line of recipeLines) if (line.itemId !== "") ids.add(line.itemId)
     return ids
   }, [recipeLines])
+
+  const recipeForCost = useMemo(() => {
+    return recipeLines
+      .map((l) => ({
+        itemId: l.itemId === "" ? NaN : l.itemId,
+        quantity: Number.parseFloat(l.quantity),
+      }))
+      .filter((l) => Number.isFinite(l.itemId) && Number.isFinite(l.quantity) && l.quantity > 0)
+  }, [recipeLines])
+
+  const calculatedIngredientCost = useMemo(() => {
+    if (recipeForCost.length === 0) return null
+    return computeRecipeCostLkr(recipeForCost, inventoryItems)
+  }, [recipeForCost, inventoryItems])
 
   const handleSaveItem = async () => {
     if (!newItem.name || !newItem.price || newItem.categoryId === "") return
@@ -207,12 +227,19 @@ const MenuItems = () => {
     const imageUrl: string | null =
       (existingProduct?.imageUrl ?? null) === "/placeholder.svg" ? null : (existingProduct?.imageUrl ?? null)
 
+    const costPrice =
+      recipe.length > 0 && calculatedIngredientCost != null
+        ? calculatedIngredientCost
+        : Math.round(basePrice * 0.45)
+
     try {
       const payload = {
         categoryId: newItem.categoryId,
+        kitchen: newItem.kitchen,
         name: newItem.name.trim(),
+        nameSinhala: newItem.nameSinhala.trim() || null,
         description: newItem.description.trim(),
-        costPrice: basePrice, // keep same as previous behavior
+        costPrice,
         sellingPrice: newItem.hasPortionPricing && portionPrices.MEDIUM != null ? portionPrices.MEDIUM : basePrice,
         imageUrl,
         isAvailable: true,
@@ -248,7 +275,7 @@ const MenuItems = () => {
       setIsDialogOpen(false)
     } catch (e) {
       console.error(e)
-      setUploadError("Failed to save product. Check backend and try again.")
+      setUploadError("Failed to save product. Please try again.")
     } finally {
       setIsSaving(false)
     }
@@ -325,6 +352,17 @@ const MenuItems = () => {
                 </div>
 
                 <div className="grid gap-2">
+                  <Label htmlFor="item-name-si">Kitchen ticket name (Sinhala, optional)</Label>
+                  <Input
+                    id="item-name-si"
+                    value={newItem.nameSinhala}
+                    onChange={(e) => setNewItem({ ...newItem, nameSinhala: e.target.value })}
+                    placeholder="Shown on Sinhala KOT; English name if left empty"
+                    style={{ fontFamily: "'Noto Sans Sinhala', system-ui, sans-serif" }}
+                  />
+                </div>
+
+                <div className="grid gap-2">
                   <Label htmlFor="item-category">Category</Label>
                   <div className="flex gap-2">
                     <select
@@ -385,6 +423,20 @@ const MenuItems = () => {
                       </Button>
                     </div>
                   )}
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="item-kitchen">Kitchen</Label>
+                  <select
+                    id="item-kitchen"
+                    value={newItem.kitchen}
+                    onChange={(e) => setNewItem({ ...newItem, kitchen: e.target.value as Kitchen })}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
+                  >
+                    <option value="KITCHEN_1">Kitchen 1</option>
+                    <option value="KITCHEN_2">Kitchen 2</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">Orders for this item route to the selected station.</p>
                 </div>
 
                 <div className="grid gap-2">
@@ -472,8 +524,14 @@ const MenuItems = () => {
                     <div>
                       <p className="text-sm font-medium">Recipe</p>
                       <p className="text-xs text-muted-foreground">
-                        Select inventory items used and quantity in <span className="font-medium">kg</span>.
+                        Select inventory items used and quantity in <span className="font-medium">kg</span>. Cost uses{" "}
+                        <span className="font-medium">qty × unit cost (LKR/kg)</span> from inventory.
                       </p>
+                      {calculatedIngredientCost != null && (
+                        <p className="text-sm font-semibold text-primary mt-2">
+                          Calculated cost (ingredients): {formatCurrency(calculatedIngredientCost)}
+                        </p>
+                      )}
                     </div>
                     <Button
                       type="button"
@@ -609,7 +667,13 @@ const MenuItems = () => {
                             </Badge>
                           </div>
 
-                          <p className="text-sm text-accent font-semibold">{formatCurrency(item.sellingPrice)}</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm text-accent font-semibold">{formatCurrency(item.sellingPrice)}</p>
+                            <Badge variant="secondary" className="text-[10px]">
+                              {(item.kitchen ?? "KITCHEN_1") === "KITCHEN_2" ? "Kitchen 2" : "Kitchen 1"}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground">Cost: {formatCurrency(item.costPrice)}</p>
 
                           {item.hasPortionPricing && (
                             <p className="text-xs text-muted-foreground mt-1">
@@ -630,8 +694,10 @@ const MenuItems = () => {
                               setEditingProductId(item.productId)
                               setNewItem({
                                 name: item.name,
+                                nameSinhala: item.nameSinhala ?? "",
                                 price: String(item.sellingPrice),
                                 categoryId: item.categoryId,
+                                kitchen: item.kitchen ?? "KITCHEN_1",
                                 description: item.description ?? "",
 
                                 hasPortionPricing: !!item.hasPortionPricing,

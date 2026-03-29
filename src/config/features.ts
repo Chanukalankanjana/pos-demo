@@ -36,7 +36,7 @@ export const featureConfigs: Record<FeatureKey, FeatureConfig> = {
     upgradeMessage: "Unlock HR tools to keep your team organized and payroll under control.",
     recommendedPlan: "Pro",
     priceHint: "Best for restaurants with 10+ staff.",
-    isEnabled: false,
+    isEnabled: true,
   },
   attendance: {
     key: "attendance",
@@ -45,7 +45,7 @@ export const featureConfigs: Record<FeatureKey, FeatureConfig> = {
     upgradeMessage: "Use attendance tracking to get clear visibility into staffing and coverage.",
     recommendedPlan: "Pro",
     priceHint: "Included with Pro plan.",
-    isEnabled: false,
+    isEnabled: true,
   },
   crm: {
     key: "crm",
