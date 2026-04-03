@@ -5,21 +5,20 @@ import { DashboardLayout } from "@/components/Layout/DashboardLayout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ClipboardList, Search, Pencil, Trash2, Clock, CheckCircle, XCircle } from "lucide-react"
+import { toast } from "sonner"
 import { cn, formatCurrency } from "@/lib/utils"
+import { ORDER_DELETE_AUTH } from "@/config/orderDeleteCredentials"
 import { getAllProducts } from "@/lib/productsApi"
 import {
   getAllOrders,
@@ -67,6 +66,12 @@ type UiOrder = Omit<OrderResponseDto, "items"> & {
   items: UiOrderItem[]
 }
 
+/** `patchOrder` / order API returns slim `items`; keep enriched `UiOrderItem[]` from state. */
+function mergeOrderResponseIntoUi(existing: UiOrder, fromApi: OrderResponseDto): UiOrder {
+  const { items: _itemsFromApi, ...rest } = fromApi
+  return { ...existing, ...rest }
+}
+
 function formatTime(iso: string) {
   const d = new Date(iso)
   const now = new Date()
@@ -98,7 +103,10 @@ export default function Orders() {
   const [search, setSearch] = useState("")
   const [editingOrder, setEditingOrder] = useState<UiOrder | null>(null)
   const [deleteOrderId, setDeleteOrderId] = useState<number | null>(null)
+  const [deleteAuthUsername, setDeleteAuthUsername] = useState("")
+  const [deleteAuthPassword, setDeleteAuthPassword] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
 
   const refresh = async () => {
     setIsLoading(true)
@@ -166,7 +174,9 @@ export default function Orders() {
   const handleStatusChange = async (order: UiOrder, status: OrderStatus) => {
     try {
       const updated = await patchOrder(order.orderId, { status })
-      setOrders((prev) => prev.map((o) => (o.orderId === updated.orderId ? { ...o, ...updated } : o)))
+      setOrders((prev) =>
+        prev.map((o) => (o.orderId === updated.orderId ? mergeOrderResponseIntoUi(o, updated) : o)),
+      )
     } catch (e) {
       console.error(e)
     }
@@ -177,8 +187,34 @@ export default function Orders() {
       await deleteOrder(orderId)
       setOrders((prev) => prev.filter((o) => o.orderId !== orderId))
       setDeleteOrderId(null)
+      setDeleteAuthUsername("")
+      setDeleteAuthPassword("")
+      toast.success("Order deleted")
     } catch (e) {
       console.error(e)
+      toast.error("Failed to delete order")
+    }
+  }
+
+  const closeDeleteDialog = () => {
+    setDeleteOrderId(null)
+    setDeleteAuthUsername("")
+    setDeleteAuthPassword("")
+  }
+
+  const confirmDeleteWithAuth = async () => {
+    if (deleteOrderId == null) return
+    const u = deleteAuthUsername.trim()
+    const p = deleteAuthPassword
+    if (u !== ORDER_DELETE_AUTH.username || p !== ORDER_DELETE_AUTH.password) {
+      toast.error("Invalid username or password")
+      return
+    }
+    setIsDeleting(true)
+    try {
+      await handleDelete(deleteOrderId)
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -249,29 +285,64 @@ export default function Orders() {
           order={editingOrder}
           onClose={() => setEditingOrder(null)}
           onSaved={(updated) => {
-            setOrders((prev) => prev.map((o) => (o.orderId === updated.orderId ? { ...o, ...updated } : o)))
+            setOrders((prev) =>
+              prev.map((o) => (o.orderId === updated.orderId ? mergeOrderResponseIntoUi(o, updated) : o)),
+            )
           }}
         />
 
-        <AlertDialog open={deleteOrderId != null} onOpenChange={(open) => !open && setDeleteOrderId(null)}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete order?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will permanently remove order {deleteOrderId}. This action cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() => deleteOrderId != null && handleDelete(deleteOrderId)}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+        <Dialog
+          open={deleteOrderId != null}
+          onOpenChange={(open) => {
+            if (!open) closeDeleteDialog()
+          }}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Delete order</DialogTitle>
+              <DialogDescription>
+                Enter the manager username and password to permanently remove order #{deleteOrderId}. This cannot be
+                undone.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3 py-2">
+              <div className="grid gap-2">
+                <Label htmlFor="delete-order-username">Username</Label>
+                <Input
+                  id="delete-order-username"
+                  autoComplete="username"
+                  value={deleteAuthUsername}
+                  onChange={(e) => setDeleteAuthUsername(e.target.value)}
+                  placeholder="Username"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="delete-order-password">Password</Label>
+                <Input
+                  id="delete-order-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={deleteAuthPassword}
+                  onChange={(e) => setDeleteAuthPassword(e.target.value)}
+                  placeholder="Password"
+                />
+              </div>
+            </div>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button type="button" variant="outline" onClick={closeDeleteDialog}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={isDeleting}
+                onClick={() => void confirmDeleteWithAuth()}
               >
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+                {isDeleting ? "Deleting…" : "Delete order"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </DashboardLayout>
   )

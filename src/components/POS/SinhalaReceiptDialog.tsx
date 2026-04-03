@@ -1,6 +1,4 @@
-import { useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { formatCurrency } from "@/lib/utils"
 import type { Kitchen } from "@/lib/ordersApi"
@@ -39,6 +37,8 @@ export type KitchenTicketPayload = {
   orderId: number
   tableLabel: string
   orderTypeLabelSi: string
+  /** Optional special instructions from POS current-order note (Sinhala or English). */
+  kitchenNote?: string | null
   lines: KitchenTicketLine[]
 }
 
@@ -84,6 +84,60 @@ function kotLineDisplay(line: KitchenTicketLine) {
   return si && si.length > 0 ? si : line.nameEn
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
+function lineDisplayName(line: ReceiptLine): string {
+  return line.portion ? `${line.name} (${line.portion})` : line.name
+}
+
+/** Build bill HTML from data so print does not rely on portaled dialog DOM (fixes empty / failed print). */
+function buildCustomerBillHtml(customer: CustomerBillPayload, d: Date): string {
+  const rows = customer.lines
+    .map(
+      (line) => `<tr>
+      <td class="py-1">${escapeHtml(lineDisplayName(line))}</td>
+      <td style="text-align:center">${line.qty}</td>
+      <td style="text-align:right;white-space:nowrap">${formatCurrency(line.unitPrice)}</td>
+      <td style="text-align:right;white-space:nowrap;font-weight:600">${formatCurrency(line.lineTotal)}</td>
+    </tr>`,
+    )
+    .join("")
+  return `<div class="customer-print-section">
+    <div style="text-align:center;border-bottom:1px solid #e5e5e5;padding-bottom:8px">
+      <p style="font-weight:600;font-size:1rem;margin:0">${customerLabels.restaurant}</p>
+      <p style="font-size:0.7rem;color:#666;margin:4px 0 0">${customerLabels.receipt}</p>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:0.75rem;margin-top:8px">
+      <span>${customerLabels.date}:</span><span style="text-align:right">${escapeHtml(d.toLocaleString())}</span>
+      <span>${customerLabels.orderNo}:</span><span style="text-align:right;font-family:monospace">#${customer.orderId}</span>
+      <span>${customerLabels.table}:</span><span style="text-align:right">${escapeHtml(customer.tableLabel)}</span>
+      <span>${customerLabels.orderType}:</span><span style="text-align:right">${escapeHtml(customer.orderTypeLabel)}</span>
+      <span>${customerLabels.payment}:</span><span style="text-align:right">${escapeHtml(customer.paymentLabel)}</span>
+    </div>
+    <table>
+      <thead><tr>
+        <th>${customerLabels.item}</th>
+        <th style="width:2.5rem;text-align:center">${customerLabels.qty}</th>
+        <th style="text-align:right">${customerLabels.unit}</th>
+        <th style="text-align:right">${customerLabels.amount}</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="font-size:0.75rem;border-top:1px solid #e5e5e5;padding-top:8px;margin-top:8px">
+      <div style="display:flex;justify-content:space-between"><span>${customerLabels.sub}</span><span>${formatCurrency(customer.subtotal)}</span></div>
+      <div style="display:flex;justify-content:space-between"><span>${customerLabels.tax}</span><span>${formatCurrency(customer.taxAmount)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;padding-top:4px"><span>${customerLabels.grand}</span><span>${formatCurrency(customer.total)}</span></div>
+    </div>
+    <p style="text-align:center;font-size:0.7rem;color:#666;padding-top:8px;margin:0">${customerLabels.thanks}</p>
+  </div>`
+}
+
 /** Matches index.css — embedded in print popup so styles apply without Tailwind */
 const KOT_PRINT_STYLES = `
   .kot-title {
@@ -124,35 +178,6 @@ const KOT_PRINT_STYLES = `
   .kot-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 0.75rem; margin-top: 8px; }
 `
 
-function openPrintWindow(elementId: string, documentTitle: string, sinhalaFont: boolean) {
-  const node = document.getElementById(elementId)
-  if (!node) return
-  const fontLink = sinhalaFont
-    ? `<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Sinhala:wght@400;600;700&display=swap" rel="stylesheet">`
-    : ""
-  const bodyFont = sinhalaFont
-    ? "'Noto Sans Sinhala', system-ui, sans-serif"
-    : "system-ui, -apple-system, Segoe UI, sans-serif"
-  const w = window.open("", "_blank", "width=400,height=700")
-  if (!w) return
-  const kotBlock = sinhalaFont ? KOT_PRINT_STYLES : ""
-  w.document.write(`<!DOCTYPE html><html><head>
-    <title>${documentTitle}</title>
-    ${fontLink}
-    <style>
-      body { font-family: ${bodyFont}; padding: 16px; max-width: 380px; margin: 0 auto; }
-      ${kotBlock}
-      ${sinhalaFont ? "" : `table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 12px; }
-      th, td { text-align: left; padding: 4px 2px; border-bottom: 1px solid #eee; }
-      th { font-weight: 600; }`}
-    </style>
-  </head><body>${node.innerHTML}</body></html>`)
-  w.document.close()
-  w.focus()
-  w.print()
-  w.close()
-}
-
 function renderKotInnerHtml(ticket: KitchenTicketPayload, d: Date) {
   const rows = ticket.lines
     .map(
@@ -181,32 +206,83 @@ function renderKotInnerHtml(ticket: KitchenTicketPayload, d: Date) {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <p class="prep-note">${kotLabels.prepNote}</p>
+    ${ticket.kitchenNote && ticket.kitchenNote.trim().length > 0 ? `<p class="prep-note">${ticket.kitchenNote}</p>` : `<p class="prep-note">${kotLabels.prepNote}</p>`}
   `
 }
 
-function printAllKitchenTickets(tickets: KitchenTicketPayload[], d: Date) {
-  if (tickets.length === 0) return
-  const pages = tickets
-    .map(
-      (t, i) =>
-        `<div class="kot-page">${renderKotInnerHtml(t, d)}</div>`,
-    )
-    .join("")
-  const w = window.open("", "_blank", "width=400,height=700")
-  if (!w) return
-  w.document.write(`<!DOCTYPE html><html><head>
-    <title>Kitchen-tickets</title>
+function buildPrintDocumentHtml(customerHtml: string, kotSection: string): string {
+  return `<!DOCTYPE html><html><head>
+    <meta charset="utf-8" />
+    <title>Receipt & kitchen tickets</title>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Sinhala:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
-      body { font-family: 'Noto Sans Sinhala', system-ui, sans-serif; padding: 16px; max-width: 380px; margin: 0 auto; }
+      body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; padding: 16px; max-width: 380px; margin: 0 auto; }
+      .customer-print-section table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 12px; }
+      .customer-print-section th, .customer-print-section td { text-align: left; padding: 4px 2px; border-bottom: 1px solid #eee; }
+      .customer-print-section th { font-weight: 600; }
+      ${kotSection ? `.customer-print-section { page-break-after: always; }` : ""}
       ${KOT_PRINT_STYLES}
+      .kot-page { font-family: 'Noto Sans Sinhala', system-ui, sans-serif; }
     </style>
-  </head><body>${pages}</body></html>`)
-  w.document.close()
-  w.focus()
-  w.print()
-  w.close()
+  </head><body>${customerHtml}${kotSection}</body></html>`
+}
+
+function runPrint(html: string): void {
+  const schedulePrint = (win: Window, afterClose?: () => void) => {
+    const doc = win.document
+    doc.open()
+    doc.write(html)
+    doc.close()
+    win.focus()
+    const doPrint = () => {
+      win.print()
+      const closeLater = () => {
+        try {
+          win.close()
+        } catch {
+          /* ignore */
+        }
+        afterClose?.()
+      }
+      win.addEventListener("afterprint", closeLater)
+      setTimeout(closeLater, 800)
+    }
+    if (doc.readyState === "complete") {
+      setTimeout(doPrint, 100)
+    } else {
+      win.addEventListener("load", () => setTimeout(doPrint, 100))
+    }
+  }
+
+  const w = window.open("", "_blank", "width=420,height=720")
+  if (w) {
+    schedulePrint(w)
+    return
+  }
+
+  // Popup blocked: print from a hidden iframe (same tab, usually allowed)
+  const iframe = document.createElement("iframe")
+  iframe.setAttribute("title", "Print receipt")
+  iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none"
+  document.body.appendChild(iframe)
+  const iw = iframe.contentWindow
+  if (!iw) {
+    document.body.removeChild(iframe)
+    return
+  }
+  schedulePrint(iw, () => {
+    iframe.remove()
+  })
+}
+
+/** One print job: English customer bill, then each Sinhala KOT (page breaks between kitchens). */
+function printCustomerBillAndKitchenTickets(customer: CustomerBillPayload, tickets: KitchenTicketPayload[], d: Date) {
+  const customerHtml = buildCustomerBillHtml(customer, d)
+  const kotSection =
+    tickets.length > 0
+      ? tickets.map((t) => `<div class="kot-page">${renderKotInnerHtml(t, d)}</div>`).join("")
+      : ""
+  runPrint(buildPrintDocumentHtml(customerHtml, kotSection))
 }
 
 export function SinhalaReceiptDialog({
@@ -218,187 +294,86 @@ export function SinhalaReceiptDialog({
   onOpenChange: (v: boolean) => void
   payload: OrderBillsPayload | null
 }) {
-  const [tab, setTab] = useState("customer")
-
   if (!payload) return null
 
-  const printCustomerId = "print-customer-bill"
   const d = new Date()
 
-  const lineDisplayName = (line: ReceiptLine) =>
-    line.portion ? `${line.name} (${line.portion})` : line.name
-
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        onOpenChange(v)
-        if (v) setTab("customer")
-      }}
-    >
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-center">Order complete</DialogTitle>
-          <p className="text-center text-sm text-muted-foreground font-normal">
-            Print the English customer bill and each Sinhala kitchen ticket (split by station). You can print them one by one or all KOTs in one job.
-          </p>
         </DialogHeader>
 
-        <Tabs value={tab} onValueChange={setTab} className="w-full">
-          <TabsList className="flex h-auto min-h-10 w-full flex-wrap justify-start gap-1 bg-muted/50 p-1">
-            <TabsTrigger value="customer" className="flex-1 min-w-[8rem]">
-              Customer bill
-            </TabsTrigger>
-            {payload.kitchenTickets.map((t) => (
-              <TabsTrigger key={t.kitchen} value={`kot-${t.kitchen}`} className="flex-1 min-w-[8rem]">
-                KOT · {t.kitchen === "KITCHEN_1" ? "Kitchen 1" : "Kitchen 2"}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+        <div className="mt-4 space-y-3">
+          <div
+            className="space-y-3 text-sm p-2 border rounded-lg bg-card"
+            style={{ fontFamily: "system-ui, -apple-system, Segoe UI, sans-serif" }}
+          >
+            <div className="text-center border-b pb-2">
+              <p className="font-semibold text-base">{customerLabels.restaurant}</p>
+              <p className="text-xs text-muted-foreground">{customerLabels.receipt}</p>
+            </div>
+            <div className="grid grid-cols-2 gap-1 text-xs">
+              <span>{customerLabels.date}:</span>
+              <span className="text-right">{d.toLocaleString()}</span>
+              <span>{customerLabels.orderNo}:</span>
+              <span className="text-right font-mono">#{payload.customer.orderId}</span>
+              <span>{customerLabels.table}:</span>
+              <span className="text-right">{payload.customer.tableLabel}</span>
+              <span>{customerLabels.orderType}:</span>
+              <span className="text-right">{payload.customer.orderTypeLabel}</span>
+              <span>{customerLabels.payment}:</span>
+              <span className="text-right">{payload.customer.paymentLabel}</span>
+            </div>
 
-          <TabsContent value="customer" className="mt-4 space-y-3">
-            <div
-              id={printCustomerId}
-              className="space-y-3 text-sm p-2 border rounded-lg bg-card"
-              style={{ fontFamily: "system-ui, -apple-system, Segoe UI, sans-serif" }}
-            >
-              <div className="text-center border-b pb-2">
-                <p className="font-semibold text-base">{customerLabels.restaurant}</p>
-                <p className="text-xs text-muted-foreground">{customerLabels.receipt}</p>
-              </div>
-              <div className="grid grid-cols-2 gap-1 text-xs">
-                <span>{customerLabels.date}:</span>
-                <span className="text-right">{d.toLocaleString()}</span>
-                <span>{customerLabels.orderNo}:</span>
-                <span className="text-right font-mono">#{payload.customer.orderId}</span>
-                <span>{customerLabels.table}:</span>
-                <span className="text-right">{payload.customer.tableLabel}</span>
-                <span>{customerLabels.orderType}:</span>
-                <span className="text-right">{payload.customer.orderTypeLabel}</span>
-                <span>{customerLabels.payment}:</span>
-                <span className="text-right">{payload.customer.paymentLabel}</span>
-              </div>
-
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left py-1">{customerLabels.item}</th>
-                    <th className="text-center w-10">{customerLabels.qty}</th>
-                    <th className="text-right">{customerLabels.unit}</th>
-                    <th className="text-right">{customerLabels.amount}</th>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b">
+                  <th className="text-left py-1">{customerLabels.item}</th>
+                  <th className="text-center w-10">{customerLabels.qty}</th>
+                  <th className="text-right">{customerLabels.unit}</th>
+                  <th className="text-right">{customerLabels.amount}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payload.customer.lines.map((line, i) => (
+                  <tr key={i} className="border-b border-muted/50">
+                    <td className="py-1.5 pr-1">{line.portion ? `${line.name} (${line.portion})` : line.name}</td>
+                    <td className="text-center">{line.qty}</td>
+                    <td className="text-right whitespace-nowrap">{formatCurrency(line.unitPrice)}</td>
+                    <td className="text-right whitespace-nowrap font-medium">{formatCurrency(line.lineTotal)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {payload.customer.lines.map((line, i) => (
-                    <tr key={i} className="border-b border-muted/50">
-                      <td className="py-1.5 pr-1">{lineDisplayName(line)}</td>
-                      <td className="text-center">{line.qty}</td>
-                      <td className="text-right whitespace-nowrap">{formatCurrency(line.unitPrice)}</td>
-                      <td className="text-right whitespace-nowrap font-medium">{formatCurrency(line.lineTotal)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                ))}
+              </tbody>
+            </table>
 
-              <div className="space-y-1 text-xs border-t pt-2">
-                <div className="flex justify-between">
-                  <span>{customerLabels.sub}</span>
-                  <span>{formatCurrency(payload.customer.subtotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>{customerLabels.tax}</span>
-                  <span>{formatCurrency(payload.customer.taxAmount)}</span>
-                </div>
-                <div className="flex justify-between text-base font-bold pt-1">
-                  <span>{customerLabels.grand}</span>
-                  <span>{formatCurrency(payload.customer.total)}</span>
-                </div>
+            <div className="space-y-1 text-xs border-t pt-2">
+              <div className="flex justify-between">
+                <span>{customerLabels.sub}</span>
+                <span>{formatCurrency(payload.customer.subtotal)}</span>
               </div>
-
-              <p className="text-center text-xs text-muted-foreground pt-2">{customerLabels.thanks}</p>
+              <div className="flex justify-between">
+                <span>{customerLabels.tax}</span>
+                <span>{formatCurrency(payload.customer.taxAmount)}</span>
+              </div>
+              <div className="flex justify-between text-base font-bold pt-1">
+                <span>{customerLabels.grand}</span>
+                <span>{formatCurrency(payload.customer.total)}</span>
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2 justify-end">
-              <Button type="button" onClick={() => openPrintWindow(printCustomerId, "Customer-receipt", false)}>
-                Print customer bill
-              </Button>
-              {payload.kitchenTickets.length > 1 && (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => printAllKitchenTickets(payload.kitchenTickets, d)}
-                >
-                  Print all kitchen tickets
-                </Button>
-              )}
-            </div>
-          </TabsContent>
 
-          {payload.kitchenTickets.map((ticket) => {
-            const printId = `print-kot-${ticket.kitchen}`
-            return (
-              <TabsContent key={ticket.kitchen} value={`kot-${ticket.kitchen}`} className="mt-4 space-y-3">
-                <div
-                  id={printId}
-                  className="space-y-2 p-2 border rounded-lg bg-card"
-                  style={{ fontFamily: "'Noto Sans Sinhala', system-ui, sans-serif" }}
-                >
-                  <div className="kot-title">{kotLabels.title}</div>
-                  <p className="text-center text-[10px] text-muted-foreground">{kotLabels.subtitle}</p>
-                  <div className="text-center">
-                    <span className="inline-block rounded-md bg-foreground px-3 py-1 text-sm text-background">
-                      {ticket.kitchenBadgeSi}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-1 text-xs">
-                    <span>{kotLabels.orderNo}:</span>
-                    <span className="text-right font-mono font-bold">#{ticket.orderId}</span>
-                    <span>{kotLabels.table}:</span>
-                    <span className="text-right">{ticket.tableLabel}</span>
-                    <span>{kotLabels.orderType}:</span>
-                    <span className="text-right">{ticket.orderTypeLabelSi}</span>
-                    <span>{kotLabels.time}:</span>
-                    <span className="text-right">{d.toLocaleString()}</span>
-                  </div>
-
-                  <table className="kot-table w-full">
-                    <thead>
-                      <tr className="border-b">
-                        <th className="text-left py-1 font-semibold">{kotLabels.item}</th>
-                        <th className="text-center w-12 font-semibold">{kotLabels.qty}</th>
-                        <th className="text-right font-semibold">{kotLabels.note}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {ticket.lines.map((line, i) => (
-                        <tr key={i} className="border-b border-muted/50">
-                          <td className="py-1.5 pr-1 font-medium">{kotLineDisplay(line)}</td>
-                          <td className="text-center font-bold">{line.qty}</td>
-                          <td className="text-right text-muted-foreground">{line.portionSi ?? kotLabels.none}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  <p className="prep-note text-foreground">{kotLabels.prepNote}</p>
-                </div>
-                <div className="flex flex-wrap gap-2 justify-end">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={() => openPrintWindow(printId, `Kitchen-${ticket.kitchen}`, true)}
-                  >
-                    Print this kitchen ticket
-                  </Button>
-                  {payload.kitchenTickets.length > 1 && (
-                    <Button type="button" variant="outline" onClick={() => printAllKitchenTickets(payload.kitchenTickets, d)}>
-                      Print all kitchen tickets
-                    </Button>
-                  )}
-                </div>
-              </TabsContent>
-            )
-          })}
-        </Tabs>
+            <p className="text-center text-xs text-muted-foreground pt-2">{customerLabels.thanks}</p>
+          </div>
+          <div className="flex flex-wrap gap-2 justify-end">
+            <Button
+              type="button"
+              onClick={() => printCustomerBillAndKitchenTickets(payload.customer, payload.kitchenTickets, d)}
+            >
+              Print receipt &amp; kitchen tickets
+            </Button>
+          </div>
+        </div>
 
         <div className="flex gap-2 justify-end border-t pt-4">
           <Button variant="outline" onClick={() => onOpenChange(false)}>

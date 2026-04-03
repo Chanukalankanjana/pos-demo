@@ -7,7 +7,9 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Plus, UtensilsCrossed, Trash2, Pencil, X } from "lucide-react"
+import { toast } from "sonner"
 import { formatCurrency } from "@/lib/utils"
+import { formatItemCode } from "@/lib/itemCode"
 import {
   getAllProducts,
   createProduct,
@@ -28,6 +30,12 @@ const MenuItems = () => {
   const [items, setItems] = useState<ProductResponseDto[]>([])
   const [categories, setCategories] = useState<CategoryResponseDto[]>([])
   const [inventoryItems, setInventoryItems] = useState<InventoryItemResponseDto[]>([])
+
+  const nextProductId = useMemo(() => {
+    if (items.length === 0) return 1
+    const ids = items.map((p) => Number(p.productId)).filter((n) => Number.isFinite(n) && n >= 1)
+    return ids.length > 0 ? Math.max(...ids) + 1 : 1
+  }, [items])
 
   const [isLoadingCategories, setIsLoadingCategories] = useState(false)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -254,9 +262,11 @@ const MenuItems = () => {
       if (isEditing && existingProduct) {
         saved = await updateProduct(existingProduct.productId, payload)
         setItems((prev) => prev.map((p) => (p.productId === saved.productId ? saved : p)))
+        toast.success(`Item ${formatItemCode(saved.productId)} updated`)
       } else {
         saved = await createProduct(payload)
         setItems((prev) => [...prev, saved])
+        toast.success(`Item saved with ID ${formatItemCode(saved.productId)}`)
       }
 
       // 2) If an image file is selected, upload it (multipart)
@@ -335,12 +345,29 @@ const MenuItems = () => {
               </Button>
             </DialogTrigger>
 
-            <DialogContent className="sm:max-w-[520px]">
-              <DialogHeader>
+            <DialogContent className="flex max-h-[90dvh] w-[calc(100vw-1.5rem)] max-w-[520px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]">
+              <DialogHeader className="shrink-0 space-y-1.5 px-6 pb-2 pt-6 pr-14 text-left">
                 <DialogTitle>{editingProductId ? "Edit Menu Item" : "Add New Menu Item"}</DialogTitle>
               </DialogHeader>
 
-              <div className="grid gap-4 py-4">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-2">
+              <div className="grid gap-4 pb-2">
+                <div className="rounded-lg border border-muted bg-muted/30 px-3 py-2.5 text-sm">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <span className="text-muted-foreground">Item ID</span>
+                    {editingProductId != null ? (
+                      <span className="font-mono font-semibold tabular-nums">{formatItemCode(editingProductId)}</span>
+                    ) : (
+                      <span className="font-mono font-semibold tabular-nums">{formatItemCode(nextProductId)}</span>
+                    )}
+                  </div>
+                  {editingProductId == null && (
+                    <p className="text-xs text-muted-foreground mt-1.5">
+                      Generated automatically when you save. You do not need to type an ID.
+                    </p>
+                  )}
+                </div>
+
                 <div className="grid gap-2">
                   <Label htmlFor="item-name">Item Name</Label>
                   <Input
@@ -622,8 +649,9 @@ const MenuItems = () => {
 
                 {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
               </div>
+              </div>
 
-              <div className="flex justify-end gap-2">
+              <div className="flex shrink-0 justify-end gap-2 border-t border-border bg-background px-6 py-4">
                 <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
                   Cancel
                 </Button>
@@ -660,7 +688,10 @@ const MenuItems = () => {
                     <CardContent className="p-4 space-y-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <Badge variant="secondary" className="font-mono text-[10px] shrink-0">
+                              {formatItemCode(item.productId)}
+                            </Badge>
                             <h3 className="font-semibold truncate">{item.name}</h3>
                             <Badge className="bg-slate-100 text-slate-800" variant="outline">
                               {categories.find((c) => c.categoryId === item.categoryId)?.name ?? `Category ${item.categoryId}`}

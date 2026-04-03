@@ -153,9 +153,14 @@ export async function getAllProducts(): Promise<ProductResponseDto[]> {
   return ensureProductsSeeded()
 }
 
+function nextProductIdFromList(list: ProductResponseDto[]): number {
+  const numericIds = list.map((p) => Number(p.productId)).filter((n) => Number.isFinite(n) && n >= 1)
+  return numericIds.length > 0 ? Math.max(...numericIds) + 1 : 1
+}
+
 export async function createProduct(payload: ProductRequestDto): Promise<ProductResponseDto> {
   const list = await ensureProductsSeeded()
-  const nextId = list.length > 0 ? Math.max(...list.map((p) => p.productId)) + 1 : 1
+  const nextId = nextProductIdFromList(list)
   const t = nowIso()
   const recipe = await enrichRecipeLines(payload.recipe)
   const effective =

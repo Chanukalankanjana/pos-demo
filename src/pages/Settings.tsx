@@ -161,20 +161,6 @@ const Settings = () => {
                       </div>
                       <Switch defaultChecked />
                     </div>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <Label>Dark Mode</Label>
-                        <p className="text-sm text-muted-foreground">Use dark theme</p>
-                      </div>
-                      <Switch />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <Label>Sound Effects</Label>
-                        <p className="text-sm text-muted-foreground">Play notification sounds</p>
-                      </div>
-                      <Switch defaultChecked />
-                    </div>
                   </CardContent>
                 </Card>
               </div>

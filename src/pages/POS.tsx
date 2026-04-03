@@ -6,9 +6,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Plus, Minus, Trash2, CreditCard } from "lucide-react"
+import { Plus, Minus, Trash2, CreditCard, Search } from "lucide-react"
 import { toast } from "sonner"
 import { formatCurrency } from "@/lib/utils"
+import { formatItemCode } from "@/lib/itemCode"
 import { getAllProducts, type ProductResponseDto, type PortionSize } from "@/lib/productsApi"
 import { getAllCategories, type CategoryResponseDto } from "@/lib/categoriesApi"
 import { createOrder, type Kitchen, type OrderType, type PaymentMethod } from "@/lib/ordersApi"
@@ -63,6 +64,7 @@ function buildKitchenTickets(
   orderId: number,
   tableLabel: string,
   orderType: OrderType,
+  kitchenNote?: string | null,
 ): KitchenTicketPayload[] {
   const map = new Map<Kitchen, KitchenTicketPayload["lines"]>()
   for (const c of cart) {
@@ -84,6 +86,7 @@ function buildKitchenTickets(
       orderId,
       tableLabel,
       orderTypeLabelSi: orderTypeLabelSi[orderType],
+      kitchenNote,
       lines: map.get(k)!,
     }))
 }
@@ -104,10 +107,35 @@ const POS = () => {
   const [categories, setCategories] = useState<CategoryResponseDto[]>([])
   const [activeTab, setActiveTab] = useState("all")
 
+  const [searchQuery, setSearchQuery] = useState("")
+
   const [orderType, setOrderType] = useState<OrderType>("DINE_IN")
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH")
+  const [kitchenNote, setKitchenNote] = useState("")
   const [receiptOpen, setReceiptOpen] = useState(false)
   const [lastReceipt, setLastReceipt] = useState<OrderBillsPayload | null>(null)
+
+  const handleCategoryDragStart = (event: React.DragEvent<HTMLButtonElement>, categoryId: number) => {
+    event.dataTransfer.effectAllowed = "move"
+    event.dataTransfer.setData("text/plain", String(categoryId))
+  }
+
+  const handleCategoryDrop = (event: React.DragEvent<HTMLButtonElement>, targetCategoryId: number) => {
+    event.preventDefault()
+    const raw = event.dataTransfer.getData("text/plain")
+    const draggedId = Number(raw)
+    if (!Number.isFinite(draggedId) || draggedId === targetCategoryId) return
+
+    setCategories((prev) => {
+      const srcIndex = prev.findIndex((c) => Number(c.categoryId) === draggedId)
+      const dstIndex = prev.findIndex((c) => Number(c.categoryId) === targetCategoryId)
+      if (srcIndex < 0 || dstIndex < 0 || srcIndex === dstIndex) return prev
+      const next = [...prev]
+      const [moved] = next.splice(srcIndex, 1)
+      next.splice(dstIndex, 0, moved)
+      return next
+    })
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -188,6 +216,15 @@ const POS = () => {
   const removeItem = (lineKey: string) => {
     setCart((prev) => prev.filter((item) => item.lineKey !== lineKey))
   }
+
+  const normalizedSearch = searchQuery.trim().toLowerCase()
+  const filteredMenuItems = normalizedSearch
+    ? menuItems.filter((item) => {
+        const name = item.name.toLowerCase()
+        const code = formatItemCode(item.productId).toLowerCase()
+        return name.includes(normalizedSearch) || code.includes(normalizedSearch)
+      })
+    : menuItems
 
   const subtotal = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0)
   const taxAmount = Number((subtotal * 0.1).toFixed(2))
@@ -308,7 +345,7 @@ const POS = () => {
           paymentLabel: paymentLabels[paymentMethod],
           orderTypeLabel: orderTypeLabels[orderType],
         },
-        kitchenTickets: buildKitchenTickets(cart, order.orderId, tableLabel, orderType),
+        kitchenTickets: buildKitchenTickets(cart, order.orderId, tableLabel, orderType, kitchenNote),
       })
       setReceiptOpen(true)
 
@@ -338,7 +375,10 @@ const POS = () => {
               }}
             >
               <CardContent className="p-4">
-                <div className="aspect-square rounded-xl mb-4 overflow-hidden group-hover:scale-105 transition-transform duration-300">
+                <div className="relative aspect-square rounded-xl mb-4 overflow-hidden group-hover:scale-105 transition-transform duration-300">
+                  <span className="absolute left-2 top-2 z-10 rounded-md bg-background/90 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-muted-foreground shadow-sm border border-border/60">
+                    {formatItemCode(item.productId)}
+                  </span>
                   <img
                     src={item.imageUrl ?? undefined}
                     alt={item.name}
@@ -460,36 +500,55 @@ const POS = () => {
                   </div>
                 </div>
 
-                <TabsList className="w-full flex flex-wrap gap-1 bg-muted/50 p-1 rounded-xl h-auto">
-                  <TabsTrigger
-                    value="all"
-                    className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-modern"
-                  >
-                    All
-                  </TabsTrigger>
-
-                  {categories.map((c) => (
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <TabsList className="w-full flex flex-wrap gap-1 bg-muted/50 p-1 rounded-xl h-auto md:w-auto">
                     <TabsTrigger
-                      key={c.categoryId}
-                      value={String(c.categoryId)}
+                      value="all"
                       className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-modern"
                     >
-                      {c.name}
+                      All
                     </TabsTrigger>
-                  ))}
-                </TabsList>
+
+                    {categories.map((c) => (
+                      <TabsTrigger
+                        key={c.categoryId}
+                        value={String(c.categoryId)}
+                        draggable
+                        onDragStart={(e) => handleCategoryDragStart(e, Number(c.categoryId))}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => handleCategoryDrop(e, Number(c.categoryId))}
+                        className="cursor-move rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-modern"
+                      >
+                        {c.name}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+
+                  <div className="relative w-full md:w-64">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search item or code (ITM-0001)"
+                      className="h-9 w-full rounded-lg border border-input bg-background pl-9 pr-3 text-xs"
+                    />
+                  </div>
+                </div>
+
               </div>
 
               <div className="flex-1 overflow-y-auto overscroll-contain scroll-smooth min-h-0 max-h-[calc(100vh-160px)] pr-1">
                 <Card className="modern-card shadow-modern-lg border-0">
                   <CardContent className="pt-2">
                     <TabsContent value="all" className="mt-0">
-                      {renderItemsGrid(menuItems)}
+                      {renderItemsGrid(filteredMenuItems)}
                     </TabsContent>
 
                     {categories.map((c) => (
                       <TabsContent key={c.categoryId} value={String(c.categoryId)} className="mt-0">
-                        {renderItemsGrid(menuItems.filter((p) => p.categoryId === c.categoryId))}
+                        {renderItemsGrid(
+                          filteredMenuItems.filter((p) => p.categoryId === c.categoryId),
+                        )}
                       </TabsContent>
                     ))}
                   </CardContent>
@@ -498,10 +557,10 @@ const POS = () => {
             </Tabs>
           </div>
 
-          <div className="flex flex-col min-h-0">
-            <div>
-              <Card className="h-full flex flex-col modern-card shadow-modern-lg border-0 w-96 mt-2">
-                <CardHeader className="pb-2">
+          <div className="flex min-h-0 flex-col lg:h-full">
+            <div className="flex min-h-0 flex-1 flex-col">
+              <Card className="mt-2 flex min-h-0 flex-1 flex-col overflow-hidden modern-card shadow-modern-lg border-0 w-full max-w-md lg:w-96">
+                <CardHeader className="shrink-0 pb-2">
                   <CardTitle className="text-xl font-bold flex items-center gap-2">
                     <div className="w-6 h-6 gradient-accent rounded-lg flex items-center justify-center">
                       <span className="text-white text-xs font-bold">🛒</span>
@@ -559,75 +618,95 @@ const POS = () => {
                         placeholder={orderType === "DINE_IN" ? "Enter table number" : "Not required"}
                       />
                     </div>
+
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-muted-foreground mb-1 block">
+                        Kitchen note (KOT only)
+                      </label>
+                      <Input
+                        value={kitchenNote}
+                        onChange={(e) => setKitchenNote(e.target.value)}
+                        placeholder="E.g. No onions, extra spicy, pack separately"
+                        className="rounded-xl border-2 focus:border-primary transition-colors duration-200 text-xs"
+                      />
+                      <p className="text-[11px] text-muted-foreground">
+                        Printed only on kitchen tickets — not on the customer bill.
+                      </p>
+                    </div>
                   </div>
                 </CardHeader>
 
-                <CardContent className="flex-1 flex flex-col">
-                  <div className="space-y-1 mb-1 pr-2">
-                    {cart.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center text-muted-foreground">
-                        <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center mb-1">
-                          <span className="text-sm">🛒</span>
-                        </div>
-                        <p className="text-sm justify-center font-medium mb-0">No items in cart</p>
-                        <p className="text-xs justify-center text-muted-foreground">Add items from menu to start</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        {cart.map((item) => (
-                          <div
-                            key={item.lineKey}
-                            className="flex flex-col gap-2 p-3 bg-gradient-to-r from-muted/50 to-muted/30 rounded-lg border border-muted/50 hover:shadow-modern transition-all duration-200"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex-1 min-w-0">
-                                <p className="font-semibold text-sm leading-tight">{item.name}</p>
-                                <p className="text-xs text-accent font-medium mt-1">
-                                  {formatCurrency(item.unitPrice)} each
-                                </p>
-                              </div>
-                              <Button
-                                size="icon"
-                                variant="destructive"
-                                className="h-6 w-6 rounded-md flex-shrink-0"
-                                onClick={() => removeItem(item.lineKey)}
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </Button>
-                            </div>
-
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-1 bg-background rounded-md p-1">
-                                <Button
-                                  size="icon"
-                                  variant="outline"
-                                  className="h-6 w-6 rounded-md bg-transparent"
-                                  onClick={() => updateQuantity(item.lineKey, -1)}
-                                >
-                                  <Minus className="h-3 w-3" />
-                                </Button>
-                                <span className="w-6 text-center font-bold text-sm">{item.quantity}</span>
-                                <Button
-                                  size="icon"
-                                  variant="outline"
-                                  className="h-6 w-6 rounded-md bg-transparent"
-                                  onClick={() => updateQuantity(item.lineKey, 1)}
-                                >
-                                  <Plus className="h-3 w-3" />
-                                </Button>
-                              </div>
-
-                              <span className="text-sm font-bold text-accent">
-                                {formatCurrency(item.unitPrice * item.quantity)}
-                              </span>
-                            </div>
+                <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-6 pt-0">
+                  <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
+                    <div className="space-y-1 pb-2">
+                      {cart.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-6 text-muted-foreground">
+                          <div className="w-8 h-8 bg-muted rounded-full flex items-center justify-center mb-1">
+                            <span className="text-sm">🛒</span>
                           </div>
-                        ))}
-                      </div>
-                    )}
+                          <p className="text-sm justify-center font-medium mb-0">No items in cart</p>
+                          <p className="text-xs justify-center text-muted-foreground">Add items from menu to start</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {cart.map((item) => (
+                            <div
+                              key={item.lineKey}
+                              className="flex flex-col gap-2 p-3 bg-gradient-to-r from-muted/50 to-muted/30 rounded-lg border border-muted/50 hover:shadow-modern transition-all duration-200"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-semibold text-sm leading-tight">{item.name}</p>
+                                  <p className="text-[10px] font-mono text-muted-foreground mt-0.5">
+                                    {formatItemCode(item.productId)}
+                                  </p>
+                                  <p className="text-xs text-accent font-medium mt-1">
+                                    {formatCurrency(item.unitPrice)} each
+                                  </p>
+                                </div>
+                                <Button
+                                  size="icon"
+                                  variant="destructive"
+                                  className="h-6 w-6 rounded-md flex-shrink-0"
+                                  onClick={() => removeItem(item.lineKey)}
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </Button>
+                              </div>
+
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-1 bg-background rounded-md p-1">
+                                  <Button
+                                    size="icon"
+                                    variant="outline"
+                                    className="h-6 w-6 rounded-md bg-transparent"
+                                    onClick={() => updateQuantity(item.lineKey, -1)}
+                                  >
+                                    <Minus className="h-3 w-3" />
+                                  </Button>
+                                  <span className="w-6 text-center font-bold text-sm">{item.quantity}</span>
+                                  <Button
+                                    size="icon"
+                                    variant="outline"
+                                    className="h-6 w-6 rounded-md bg-transparent"
+                                    onClick={() => updateQuantity(item.lineKey, 1)}
+                                  >
+                                    <Plus className="h-3 w-3" />
+                                  </Button>
+                                </div>
+
+                                <span className="text-sm font-bold text-accent">
+                                  {formatCurrency(item.unitPrice * item.quantity)}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
-                  <div className="space-y-1 pt-1 border-t border-muted/50">
+                  <div className="shrink-0 space-y-1 border-t border-muted/50 bg-card pt-3 mt-2">
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground font-medium">Subtotal</span>
                       <span className="font-bold">{formatCurrency(subtotal)}</span>
