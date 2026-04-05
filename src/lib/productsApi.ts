@@ -36,6 +36,8 @@ export type ProductResponseDto = {
   portionPrices: PortionPrices
   recipe: ProductRecipeLineResponseDto[]
   effectiveSellingPrice: number | null
+  /** Drinks/showcase: on customer bill, not on printed kitchen tickets */
+  skipKitchenTicket: boolean
 
   createdAt: string
   updatedAt: string | null
@@ -55,6 +57,10 @@ export type ProductRequestDto = {
   hasPortionPricing: boolean
   portionPrices: PortionPrices
   recipe: ProductRecipeLineRequestDto[]
+  /** Omit from KOT print (still billed on receipt) */
+  skipKitchenTicket?: boolean
+  /** Set on create only; must be unique. If omitted, next free id is used. */
+  productId?: number
 }
 
 function categoryIdFromMenu(cat: MenuCategory): number {
@@ -90,6 +96,7 @@ function seedProductsFromMenu(): ProductResponseDto[] {
       portionPrices: {},
       recipe: [],
       effectiveSellingPrice: sellingPrice,
+      skipKitchenTicket: false,
       createdAt: t,
       updatedAt: null,
     }
@@ -116,6 +123,7 @@ function normalizeStoredProduct(p: Partial<ProductResponseDto>): ProductResponse
     portionPrices: p.portionPrices ?? {},
     recipe: Array.isArray(p.recipe) ? p.recipe : [],
     effectiveSellingPrice: p.effectiveSellingPrice ?? null,
+    skipKitchenTicket: p.skipKitchenTicket === true,
     createdAt: String(p.createdAt ?? ""),
     updatedAt: p.updatedAt ?? null,
   } as ProductResponseDto
@@ -160,7 +168,17 @@ function nextProductIdFromList(list: ProductResponseDto[]): number {
 
 export async function createProduct(payload: ProductRequestDto): Promise<ProductResponseDto> {
   const list = await ensureProductsSeeded()
-  const nextId = nextProductIdFromList(list)
+  const requested = payload.productId
+  let productId: number
+  if (requested != null) {
+    const n = Number(requested)
+    if (!Number.isInteger(n) || n < 1) throw new Error("Invalid product ID")
+    if (list.some((p) => p.productId === n)) throw new Error(`Product ID ${n} already exists`)
+    productId = n
+  } else {
+    productId = nextProductIdFromList(list)
+  }
+
   const t = nowIso()
   const recipe = await enrichRecipeLines(payload.recipe)
   const effective =
@@ -173,7 +191,7 @@ export async function createProduct(payload: ProductRequestDto): Promise<Product
       ? String(payload.nameSinhala).trim()
       : null
   const row: ProductResponseDto = {
-    productId: nextId,
+    productId,
     categoryId: payload.categoryId,
     kitchen: payload.kitchen,
     name: payload.name,
@@ -187,6 +205,7 @@ export async function createProduct(payload: ProductRequestDto): Promise<Product
     portionPrices: payload.portionPrices,
     recipe,
     effectiveSellingPrice: effective,
+    skipKitchenTicket: !!payload.skipKitchenTicket,
     createdAt: t,
     updatedAt: null,
   }
@@ -224,6 +243,7 @@ export async function updateProduct(productId: number, payload: ProductRequestDt
     portionPrices: payload.portionPrices,
     recipe,
     effectiveSellingPrice: effective,
+    skipKitchenTicket: !!payload.skipKitchenTicket,
     updatedAt: t,
   }
   list[idx] = updated

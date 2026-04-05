@@ -154,3 +154,42 @@ export async function deleteInventoryItem(itemId: number) {
   if (next.length === list.length) throw new Error(`Inventory item ${itemId} not found`)
   writeAll(next)
 }
+
+export type InventoryUsageDeductionLine = { itemId: number; quantity: number }
+
+/**
+ * Subtract quantities from stock (e.g. catering / event usage). Same units as stored qty (kg / L).
+ * Merges duplicate itemIds. Fails if any line would go below zero.
+ */
+export async function applyInventoryUsageDeductions(lines: InventoryUsageDeductionLine[]): Promise<InventoryItemResponseDto[]> {
+  const merged = new Map<number, number>()
+  for (const l of lines) {
+    const id = Number(l.itemId)
+    const q = Number(l.quantity)
+    if (!Number.isFinite(id) || id < 1) throw new Error("Invalid inventory item")
+    if (!Number.isFinite(q) || q <= 0) continue
+    merged.set(id, (merged.get(id) ?? 0) + q)
+  }
+  if (merged.size === 0) {
+    throw new Error("Add at least one item with a quantity greater than zero")
+  }
+
+  const list = readAll()
+  const t = nowIso()
+
+  for (const [itemId, deduct] of merged) {
+    const idx = list.findIndex((i) => i.itemId === itemId)
+    if (idx < 0) throw new Error(`Inventory item #${itemId} not found`)
+    const row = list[idx]
+    const nextQty = row.quantity - deduct
+    if (nextQty < 0) {
+      throw new Error(
+        `Not enough stock for "${row.itemName}" (available ${row.quantity}, trying to use ${deduct})`,
+      )
+    }
+    list[idx] = { ...row, quantity: nextQty, updatedAt: t }
+  }
+
+  writeAll(list)
+  return readAll()
+}

@@ -289,8 +289,8 @@ const Dashboard = () => {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
-            <Card className="modern-card shadow-modern-lg border-0">
-              <CardHeader className="pb-4">
+            <Card className="modern-card shadow-modern-lg border-0 flex flex-col min-h-0 max-h-[min(28rem,52vh)] overflow-hidden">
+              <CardHeader className="pb-4 shrink-0">
                 <CardTitle className="text-2xl font-bold flex items-center gap-3">
                   <div className="w-8 h-8 gradient-primary rounded-lg flex items-center justify-center">
                     <Clock className="w-5 h-5 text-white" />
@@ -298,7 +298,7 @@ const Dashboard = () => {
                   Recent Orders
                 </CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="flex-1 min-h-0 overflow-y-auto overscroll-contain pr-1">
                 {recentOrders.length === 0 ? (
                   <div className="text-sm text-muted-foreground">No orders for today.</div>
                 ) : (
@@ -338,8 +338,8 @@ const Dashboard = () => {
               </CardContent>
             </Card>
 
-            <Card className="modern-card shadow-modern-lg border-0">
-              <CardHeader className="pb-4">
+            <Card className="modern-card shadow-modern-lg border-0 flex flex-col min-h-0 max-h-[min(28rem,52vh)] overflow-hidden">
+              <CardHeader className="pb-4 shrink-0">
                 <CardTitle className="text-2xl font-bold flex items-center gap-3">
                   <div className="w-8 h-8 gradient-accent rounded-lg flex items-center justify-center">
                     <TrendingUp className="w-5 h-5 text-white" />
@@ -347,7 +347,7 @@ const Dashboard = () => {
                   Top Selling Items Today
                 </CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="flex-1 min-h-0 overflow-y-auto overscroll-contain pr-1">
                 {topItemsToday.length === 0 ? (
                   <div className="text-sm text-muted-foreground">No sales data for today.</div>
                 ) : (

@@ -3,37 +3,46 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { DollarSign, TrendingUp, TrendingDown, Download, Plus, ArrowUpRight, ArrowDownRight } from "lucide-react";
-import { useState, useEffect } from "react";
+import {
+  DollarSign,
+  TrendingUp,
+  TrendingDown,
+  Download,
+  Plus,
+  ArrowUpRight,
+  ArrowDownRight,
+  Trash2,
+} from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import {
   getAllInvoices,
   createInvoice,
   markInvoicePaid,
+  deleteInvoice,
   type CustomerInvoice,
-  type MealType,
-  DEFAULT_UNIT,
 } from "@/lib/invoicesApi";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { generatePDF } from "@/lib/pdfUtils";
 import { StatCard } from "@/components/Dashboard/StatCard";
 import { formatCurrency, formatCurrencyCompact } from "@/lib/utils";
+import { toast } from "sonner";
 
-const mealLabels: Record<MealType, string> = {
-  breakfast: "Breakfast",
-  lunch: "Lunch",
-  dinner: "Dinner",
-};
+type InvLineDraft = { description: string; qty: string; unitPrice: string };
+
+const DEFAULT_NEW_LINE: InvLineDraft = { description: "", qty: "1", unitPrice: "" };
+
+function linesSummary(inv: CustomerInvoice, maxLabels = 2): string {
+  const parts = inv.lines.map((l) => l.description).slice(0, maxLabels);
+  const more = inv.lines.length > maxLabels ? ` +${inv.lines.length - maxLabels} more` : "";
+  return (parts.join(" · ") || "—") + more;
+}
 
 const Accounting = () => {
   const [customerInvoices, setCustomerInvoices] = useState<CustomerInvoice[]>([]);
-  const [invForm, setInvForm] = useState({
-    customerName: "",
-    mealType: "lunch" as MealType,
-    qty: "1",
-    unitPrice: String(DEFAULT_UNIT.lunch),
-  });
+  const [invCustomer, setInvCustomer] = useState("");
+  const [invLines, setInvLines] = useState<InvLineDraft[]>([{ ...DEFAULT_NEW_LINE, unitPrice: "650" }]);
   const [pdfTarget, setPdfTarget] = useState<CustomerInvoice | null>(null);
 
   useEffect(() => {
@@ -54,30 +63,78 @@ const Accounting = () => {
   }, [pdfTarget]);
 
   const handleCreateCustomerInvoice = async () => {
-    const qty = Number.parseFloat(invForm.qty);
-    const unitPrice = Number.parseFloat(invForm.unitPrice);
-    if (!invForm.customerName.trim() || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(unitPrice) || unitPrice < 0) {
+    if (!invCustomer.trim()) {
+      toast.error("Customer name is required.");
       return;
     }
-    const created = await createInvoice({
-      customerName: invForm.customerName,
-      mealType: invForm.mealType,
-      qty,
-      unitPrice,
-    });
-    setCustomerInvoices((prev) => [created, ...prev]);
-    setInvForm({
-      customerName: "",
-      mealType: "lunch",
-      qty: "1",
-      unitPrice: String(DEFAULT_UNIT.lunch),
-    });
-    setPdfTarget(created);
+    const parsedLines = invLines.map((row) => ({
+      description: row.description.trim(),
+      qty: Number.parseFloat(row.qty),
+      unitPrice: Number.parseFloat(row.unitPrice),
+    }));
+    for (const l of parsedLines) {
+      if (!l.description) {
+        toast.error("Each line needs a description (e.g. Lunch, Sudhu rice, Ala curry).");
+        return;
+      }
+      if (!Number.isFinite(l.qty) || l.qty <= 0) {
+        toast.error("Each line needs quantity greater than zero.");
+        return;
+      }
+      if (!Number.isFinite(l.unitPrice) || l.unitPrice < 0) {
+        toast.error("Unit price must be zero or more (LKR).");
+        return;
+      }
+    }
+    try {
+      const created = await createInvoice({ customerName: invCustomer, lines: parsedLines });
+      setCustomerInvoices((prev) => [created, ...prev]);
+      setInvCustomer("");
+      setInvLines([{ ...DEFAULT_NEW_LINE, unitPrice: "650" }]);
+      toast.success("Invoice created.");
+      setPdfTarget(created);
+    } catch (e) {
+      console.error(e);
+      toast.error(e instanceof Error ? e.message : "Could not create invoice.");
+    }
   };
 
   const handleMarkPaid = async (invoiceId: string) => {
-    const updated = await markInvoicePaid(invoiceId);
-    setCustomerInvoices((prev) => prev.map((i) => (i.invoiceId === invoiceId ? updated : i)));
+    try {
+      const updated = await markInvoicePaid(invoiceId);
+      setCustomerInvoices((prev) => prev.map((i) => (i.invoiceId === invoiceId ? updated : i)));
+      setRecentTransactions((prev) => {
+        const dup = prev.some((t) => t.id === `INV-${updated.invoiceId}`);
+        if (dup) return prev;
+        return [
+          {
+            id: `INV-${updated.invoiceId}`,
+            date: new Date().toISOString().split("T")[0],
+            type: "income" as const,
+            category: "Sales",
+            amount: updated.total,
+            description: `Customer invoice ${updated.invoiceId} — ${updated.customerName}`,
+          },
+          ...prev,
+        ];
+      });
+      toast.success("Marked paid — recorded as sales in Recent transactions.");
+    } catch (e) {
+      console.error(e);
+      toast.error("Could not update invoice.");
+    }
+  };
+
+  const handleDeleteInvoice = async (inv: CustomerInvoice) => {
+    if (!window.confirm(`Delete invoice ${inv.invoiceId} for ${inv.customerName}?`)) return;
+    try {
+      await deleteInvoice(inv.invoiceId);
+      setCustomerInvoices((prev) => prev.filter((i) => i.invoiceId !== inv.invoiceId));
+      toast.success("Invoice deleted.");
+    } catch (e) {
+      console.error(e);
+      toast.error("Could not delete invoice.");
+    }
   };
 
   const handleDownloadInvoice = (inv: CustomerInvoice) => {
@@ -85,13 +142,25 @@ const Accounting = () => {
   };
 
   const [recentTransactions, setRecentTransactions] = useState([
-    { id: "TRX001", date: "2025-10-15", type: "income", category: "Sales", amount: 125750.00, description: "Table 5 - Dinner Service" },
-    { id: "TRX002", date: "2025-10-15", type: "expense", category: "Inventory", amount: -45000.00, description: "Fresh Produce Delivery" },
-    { id: "TRX003", date: "2025-10-14", type: "income", category: "Sales", amount: 98500.00, description: "Online Orders" },
-    { id: "TRX004", date: "2025-10-14", type: "expense", category: "Utilities", amount: -32000.00, description: "Electricity Bill" },
-    { id: "TRX005", date: "2025-10-14", type: "expense", category: "Payroll", amount: -280000.00, description: "Staff Salaries - Week 41" },
-    { id: "TRX006", date: "2025-10-13", type: "income", category: "Sales", amount: 156250.00, description: "Weekend Rush" },
+    { id: "TRX001", date: "2025-10-15", type: "income" as const, category: "Sales", amount: 125750.0, description: "Table 5 - Dinner Service" },
+    { id: "TRX002", date: "2025-10-15", type: "expense" as const, category: "Inventory", amount: -45000.0, description: "Fresh Produce Delivery" },
+    { id: "TRX003", date: "2025-10-14", type: "income" as const, category: "Sales", amount: 98500.0, description: "Online Orders" },
+    { id: "TRX004", date: "2025-10-14", type: "expense" as const, category: "Utilities", amount: -32000.0, description: "Electricity Bill" },
+    { id: "TRX005", date: "2025-10-14", type: "expense" as const, category: "Payroll", amount: -280000.0, description: "Staff Salaries - Week 41" },
+    { id: "TRX006", date: "2025-10-13", type: "income" as const, category: "Sales", amount: 156250.0, description: "Weekend Rush" },
   ]);
+
+  const ledgerIncome = useMemo(
+    () => recentTransactions.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0),
+    [recentTransactions],
+  );
+  const ledgerExpenseAbs = useMemo(
+    () => recentTransactions.filter((t) => t.type === "expense").reduce((s, t) => s + Math.abs(t.amount), 0),
+    [recentTransactions],
+  );
+  const ledgerNet = ledgerIncome - ledgerExpenseAbs;
+  const profitMarginPct =
+    ledgerIncome > 0 ? Math.min(99.9, Math.max(0, (ledgerNet / ledgerIncome) * 100)) : 0;
 
   const [newTransaction, setNewTransaction] = useState({
     type: 'income',
@@ -101,13 +170,14 @@ const Accounting = () => {
   });
 
   const handleAddTransaction = () => {
+    const t = newTransaction.type === "income" ? ("income" as const) : ("expense" as const);
     const transaction = {
-      id: `TRX${String(recentTransactions.length + 1).padStart(3, '0')}`,
-      date: new Date().toISOString().split('T')[0],
-      type: newTransaction.type,
+      id: `TRX${String(recentTransactions.length + 1).padStart(3, "0")}`,
+      date: new Date().toISOString().split("T")[0],
+      type: t,
       category: newTransaction.category,
-      amount: newTransaction.type === 'income' ? parseFloat(newTransaction.amount) : -parseFloat(newTransaction.amount),
-      description: newTransaction.description
+      amount: t === "income" ? parseFloat(newTransaction.amount) : -parseFloat(newTransaction.amount),
+      description: newTransaction.description,
     };
     setRecentTransactions([transaction, ...recentTransactions]);
     setNewTransaction({ type: 'income', category: '', amount: '', description: '' });
@@ -233,31 +303,31 @@ const Accounting = () => {
         <div id="accounting-content" className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
           <StatCard
             title="Total Revenue"
-            value={formatCurrencyCompact(4825000)}
-            change="+12.5%"
+            value={formatCurrencyCompact(ledgerIncome)}
+            change="From ledger"
             icon={DollarSign}
             trend="up"
           />
           <StatCard
             title="Total Expenses"
-            value={formatCurrencyCompact(2760000)}
-            change="+5.2%"
+            value={formatCurrencyCompact(ledgerExpenseAbs)}
+            change="From ledger"
             icon={TrendingDown}
             trend="down"
           />
           <StatCard
             title="Net Profit"
-            value={formatCurrencyCompact(2065000)}
-            change="+18.3%"
+            value={formatCurrencyCompact(ledgerNet)}
+            change="Income − expenses"
             icon={TrendingUp}
-            trend="up"
+            trend={ledgerNet >= 0 ? "up" : "down"}
           />
           <StatCard
             title="Profit Margin"
-            value="42.8%"
-            change="+3.1%"
+            value={`${profitMarginPct.toFixed(1)}%`}
+            change="On ledger income"
             icon={ArrowUpRight}
-            trend="up"
+            trend={profitMarginPct >= 0 ? "up" : "down"}
           />
         </div>
 
@@ -329,67 +399,90 @@ const Accounting = () => {
 
         <Card className="mb-6">
           <CardHeader>
-            <CardTitle>Customer meal invoices</CardTitle>
+            <CardTitle>Customer invoices</CardTitle>
             <CardDescription>
-              Create an invoice with customer name, meal type (breakfast / lunch / dinner), and quantity. Download PDF after
-              saving; mark as paid when payment is received.
+              Add any lines you need — meals (breakfast, lunch, dinner), catering items (e.g. sudu rice, ala curry), or
+              custom descriptions with qty and unit price. Total must be greater than zero. Mark paid to record sales in{" "}
+              <strong>Recent transactions</strong>.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+            <div className="grid gap-4 max-w-3xl">
               <div className="grid gap-2">
                 <Label htmlFor="ci-name">Customer name</Label>
                 <Input
                   id="ci-name"
-                  value={invForm.customerName}
-                  onChange={(e) => setInvForm({ ...invForm, customerName: e.target.value })}
-                  placeholder="Name"
+                  value={invCustomer}
+                  onChange={(e) => setInvCustomer(e.target.value)}
+                  placeholder="Company or person"
                 />
               </div>
-              <div className="grid gap-2">
-                <Label htmlFor="ci-meal">Meal</Label>
-                <select
-                  id="ci-meal"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={invForm.mealType}
-                  onChange={(e) => {
-                    const m = e.target.value as MealType;
-                    setInvForm({
-                      ...invForm,
-                      mealType: m,
-                      unitPrice: String(DEFAULT_UNIT[m]),
-                    });
-                  }}
-                >
-                  <option value="breakfast">{mealLabels.breakfast}</option>
-                  <option value="lunch">{mealLabels.lunch}</option>
-                  <option value="dinner">{mealLabels.dinner}</option>
-                </select>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <Label>Line items</Label>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setInvLines((rows) => [...rows, { ...DEFAULT_NEW_LINE }])}
+                  >
+                    Add line
+                  </Button>
+                </div>
+                {invLines.map((row, idx) => (
+                  <div key={idx} className="flex flex-wrap items-end gap-2 p-3 rounded-lg border bg-muted/30">
+                    <div className="grid gap-1 flex-1 min-w-[160px]">
+                      <span className="text-xs text-muted-foreground">Description</span>
+                      <Input
+                        value={row.description}
+                        onChange={(e) =>
+                          setInvLines((prev) => prev.map((r, i) => (i === idx ? { ...r, description: e.target.value } : r)))
+                        }
+                        placeholder="e.g. Lunch, Dinner, Sudhu rice"
+                      />
+                    </div>
+                    <div className="grid gap-1 w-24">
+                      <span className="text-xs text-muted-foreground">Qty</span>
+                      <Input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={row.qty}
+                        onChange={(e) =>
+                          setInvLines((prev) => prev.map((r, i) => (i === idx ? { ...r, qty: e.target.value } : r)))
+                        }
+                      />
+                    </div>
+                    <div className="grid gap-1 w-32">
+                      <span className="text-xs text-muted-foreground">Unit (LKR)</span>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={row.unitPrice}
+                        onChange={(e) =>
+                          setInvLines((prev) => prev.map((r, i) => (i === idx ? { ...r, unitPrice: e.target.value } : r)))
+                        }
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="shrink-0"
+                      disabled={invLines.length <= 1}
+                      onClick={() => setInvLines((prev) => prev.filter((_, i) => i !== idx))}
+                      aria-label="Remove line"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
               </div>
-              <div className="grid gap-2">
-                <Label htmlFor="ci-qty">Qty</Label>
-                <Input
-                  id="ci-qty"
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={invForm.qty}
-                  onChange={(e) => setInvForm({ ...invForm, qty: e.target.value })}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="ci-unit">Unit price (LKR)</Label>
-                <Input
-                  id="ci-unit"
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={invForm.unitPrice}
-                  onChange={(e) => setInvForm({ ...invForm, unitPrice: e.target.value })}
-                />
-              </div>
-              <Button type="button" onClick={() => void handleCreateCustomerInvoice()}>
-                Save &amp; download PDF
+
+              <Button type="button" className="w-fit" onClick={() => void handleCreateCustomerInvoice()}>
+                Save invoice &amp; download PDF
               </Button>
             </div>
 
@@ -398,8 +491,8 @@ const Accounting = () => {
                 <TableRow>
                   <TableHead>Invoice</TableHead>
                   <TableHead>Customer</TableHead>
-                  <TableHead>Meal</TableHead>
-                  <TableHead>Qty</TableHead>
+                  <TableHead>Items</TableHead>
+                  <TableHead className="text-center">Lines</TableHead>
                   <TableHead className="text-right">Total</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Date</TableHead>
@@ -418,8 +511,8 @@ const Accounting = () => {
                     <TableRow key={inv.invoiceId}>
                       <TableCell className="font-mono text-xs">{inv.invoiceId}</TableCell>
                       <TableCell>{inv.customerName}</TableCell>
-                      <TableCell>{mealLabels[inv.mealType]}</TableCell>
-                      <TableCell>{inv.qty}</TableCell>
+                      <TableCell className="max-w-[220px] text-sm text-muted-foreground">{linesSummary(inv)}</TableCell>
+                      <TableCell className="text-center">{inv.lines.length}</TableCell>
                       <TableCell className="text-right font-semibold">{formatCurrency(inv.total)}</TableCell>
                       <TableCell>
                         <Badge variant={inv.status === "paid" ? "default" : "secondary"}>{inv.status}</Badge>
@@ -427,15 +520,27 @@ const Accounting = () => {
                       <TableCell className="text-xs whitespace-nowrap">
                         {new Date(inv.createdAt).toLocaleString()}
                       </TableCell>
-                      <TableCell className="text-right space-x-2">
-                        <Button type="button" size="sm" variant="outline" onClick={() => handleDownloadInvoice(inv)}>
-                          PDF
-                        </Button>
-                        {inv.status === "pending" && (
-                          <Button type="button" size="sm" onClick={() => void handleMarkPaid(inv.invoiceId)}>
-                            Mark paid
+                      <TableCell className="text-right">
+                        <div className="flex flex-wrap justify-end gap-1">
+                          <Button type="button" size="sm" variant="outline" onClick={() => handleDownloadInvoice(inv)}>
+                            PDF
                           </Button>
-                        )}
+                          {inv.status === "pending" && (
+                            <Button type="button" size="sm" onClick={() => void handleMarkPaid(inv.invoiceId)}>
+                              Mark paid
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="destructive"
+                            className="gap-1"
+                            onClick={() => void handleDeleteInvoice(inv)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Delete
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))
@@ -457,12 +562,26 @@ const Accounting = () => {
               <p>
                 <strong>Customer:</strong> {pdfTarget.customerName}
               </p>
-              <p>
-                <strong>Meal:</strong> {mealLabels[pdfTarget.mealType]}
-              </p>
-              <p>
-                <strong>Qty:</strong> {pdfTarget.qty} × {formatCurrency(pdfTarget.unitPrice)}
-              </p>
+              <table className="w-full text-xs border-collapse border border-gray-300 mt-2 mb-2">
+                <thead>
+                  <tr className="bg-gray-100">
+                    <th className="border border-gray-300 p-1 text-left">Description</th>
+                    <th className="border border-gray-300 p-1 text-right">Qty</th>
+                    <th className="border border-gray-300 p-1 text-right">Unit</th>
+                    <th className="border border-gray-300 p-1 text-right">Line total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pdfTarget.lines.map((l, i) => (
+                    <tr key={i}>
+                      <td className="border border-gray-300 p-1">{l.description}</td>
+                      <td className="border border-gray-300 p-1 text-right">{l.qty}</td>
+                      <td className="border border-gray-300 p-1 text-right">{formatCurrency(l.unitPrice)}</td>
+                      <td className="border border-gray-300 p-1 text-right">{formatCurrency(l.lineTotal)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
               <p>
                 <strong>Total:</strong> {formatCurrency(pdfTarget.total)}
               </p>

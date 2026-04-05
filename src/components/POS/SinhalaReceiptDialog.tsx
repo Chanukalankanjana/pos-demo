@@ -130,9 +130,13 @@ function buildCustomerBillHtml(customer: CustomerBillPayload, d: Date): string {
       <tbody>${rows}</tbody>
     </table>
     <div style="font-size:0.75rem;border-top:1px solid #e5e5e5;padding-top:8px;margin-top:8px">
-      <div style="display:flex;justify-content:space-between"><span>${customerLabels.sub}</span><span>${formatCurrency(customer.subtotal)}</span></div>
+      ${
+        customer.taxAmount > 0
+          ? `<div style="display:flex;justify-content:space-between"><span>${customerLabels.sub}</span><span>${formatCurrency(customer.subtotal)}</span></div>
       <div style="display:flex;justify-content:space-between"><span>${customerLabels.tax}</span><span>${formatCurrency(customer.taxAmount)}</span></div>
-      <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;padding-top:4px"><span>${customerLabels.grand}</span><span>${formatCurrency(customer.total)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;padding-top:4px"><span>${customerLabels.grand}</span><span>${formatCurrency(customer.total)}</span></div>`
+          : `<div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;padding-top:4px"><span>${customerLabels.grand}</span><span>${formatCurrency(customer.total)}</span></div>`
+      }
     </div>
     <p style="text-align:center;font-size:0.7rem;color:#666;padding-top:8px;margin:0">${customerLabels.thanks}</p>
   </div>`
@@ -182,21 +186,25 @@ function renderKotInnerHtml(ticket: KitchenTicketPayload, d: Date) {
   const rows = ticket.lines
     .map(
       (line) => `<tr>
-      <td>${kotLineDisplay(line)}</td>
+      <td>${escapeHtml(kotLineDisplay(line))}</td>
       <td style="font-weight:700">${line.qty}</td>
-      <td>${line.portionSi ?? kotLabels.none}</td>
+      <td>${escapeHtml(line.portionSi ?? kotLabels.none)}</td>
     </tr>`,
     )
     .join("")
+  const noteBlock =
+    ticket.kitchenNote && ticket.kitchenNote.trim().length > 0
+      ? `<p class="prep-note">${escapeHtml(ticket.kitchenNote.trim())}</p>`
+      : `<p class="prep-note">${kotLabels.prepNote}</p>`
   return `
     <div class="kot-title">${kotLabels.title}</div>
     <p class="kot-subtitle">${kotLabels.subtitle}</p>
     <div style="text-align:center"><span class="badge">${ticket.kitchenBadgeSi}</span></div>
     <div class="kot-meta">
       <span>${kotLabels.orderNo}:</span><span style="text-align:right;font-family:monospace;font-weight:700">#${ticket.orderId}</span>
-      <span>${kotLabels.table}:</span><span style="text-align:right">${ticket.tableLabel}</span>
-      <span>${kotLabels.orderType}:</span><span style="text-align:right">${ticket.orderTypeLabelSi}</span>
-      <span>${kotLabels.time}:</span><span style="text-align:right">${d.toLocaleString()}</span>
+      <span>${kotLabels.table}:</span><span style="text-align:right">${escapeHtml(ticket.tableLabel)}</span>
+      <span>${kotLabels.orderType}:</span><span style="text-align:right">${escapeHtml(ticket.orderTypeLabelSi)}</span>
+      <span>${kotLabels.time}:</span><span style="text-align:right">${escapeHtml(d.toLocaleString())}</span>
     </div>
     <table class="kot-table">
       <thead><tr>
@@ -206,7 +214,7 @@ function renderKotInnerHtml(ticket: KitchenTicketPayload, d: Date) {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    ${ticket.kitchenNote && ticket.kitchenNote.trim().length > 0 ? `<p class="prep-note">${ticket.kitchenNote}</p>` : `<p class="prep-note">${kotLabels.prepNote}</p>`}
+    ${noteBlock}
   `
 }
 
@@ -220,15 +228,21 @@ function buildPrintDocumentHtml(customerHtml: string, kotSection: string): strin
       .customer-print-section table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 12px; }
       .customer-print-section th, .customer-print-section td { text-align: left; padding: 4px 2px; border-bottom: 1px solid #eee; }
       .customer-print-section th { font-weight: 600; }
-      ${kotSection ? `.customer-print-section { page-break-after: always; }` : ""}
+      ${kotSection ? `.customer-print-section { page-break-after: always; break-after: page; }` : ""}
       ${KOT_PRINT_STYLES}
       .kot-page { font-family: 'Noto Sans Sinhala', system-ui, sans-serif; }
+      @media print {
+        html, body { height: auto !important; min-height: 0 !important; overflow: visible !important; }
+        body { max-width: none; margin: 0; padding: 12px; }
+        .kot-page { page-break-after: always; break-after: page; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .kot-page:last-child { page-break-after: auto; break-after: auto; }
+      }
     </style>
   </head><body>${customerHtml}${kotSection}</body></html>`
 }
 
 function runPrint(html: string): void {
-  const schedulePrint = (win: Window, afterClose?: () => void) => {
+  const schedulePrint = (win: Window, opts: { closeDelayMs: number; printDelayMs: number }, afterClose?: () => void) => {
     const doc = win.document
     doc.open()
     doc.write(html)
@@ -245,44 +259,58 @@ function runPrint(html: string): void {
         afterClose?.()
       }
       win.addEventListener("afterprint", closeLater)
-      setTimeout(closeLater, 800)
+      setTimeout(closeLater, opts.closeDelayMs)
     }
+    const kick = () => setTimeout(doPrint, opts.printDelayMs)
     if (doc.readyState === "complete") {
-      setTimeout(doPrint, 100)
+      kick()
     } else {
-      win.addEventListener("load", () => setTimeout(doPrint, 100))
+      win.addEventListener("load", kick)
     }
   }
 
   const w = window.open("", "_blank", "width=420,height=720")
   if (w) {
-    schedulePrint(w)
+    schedulePrint(w, { closeDelayMs: 2500, printDelayMs: 150 })
     return
   }
 
-  // Popup blocked: print from a hidden iframe (same tab, usually allowed)
+  // Popup blocked: 0×0 iframe clips multi-page print — use full viewport off-screen.
   const iframe = document.createElement("iframe")
   iframe.setAttribute("title", "Print receipt")
-  iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none"
+  iframe.setAttribute("aria-hidden", "true")
+  iframe.style.cssText =
+    "position:fixed;inset:0;width:100vw;height:100vh;border:0;margin:0;padding:0;opacity:0;z-index:-1;pointer-events:none"
   document.body.appendChild(iframe)
   const iw = iframe.contentWindow
   if (!iw) {
-    document.body.removeChild(iframe)
+    iframe.remove()
     return
   }
-  schedulePrint(iw, () => {
-    iframe.remove()
-  })
+  schedulePrint(
+    iw,
+    { closeDelayMs: 8000, printDelayMs: 400 },
+    () => {
+      iframe.remove()
+    },
+  )
 }
 
 /** One print job: English customer bill, then each Sinhala KOT (page breaks between kitchens). */
-function printCustomerBillAndKitchenTickets(customer: CustomerBillPayload, tickets: KitchenTicketPayload[], d: Date) {
+export function printCustomerBillAndKitchenTickets(customer: CustomerBillPayload, tickets: KitchenTicketPayload[], d: Date) {
   const customerHtml = buildCustomerBillHtml(customer, d)
   const kotSection =
     tickets.length > 0
       ? tickets.map((t) => `<div class="kot-page">${renderKotInnerHtml(t, d)}</div>`).join("")
       : ""
   runPrint(buildPrintDocumentHtml(customerHtml, kotSection))
+}
+
+/** KOT pages only (e.g. dine-in fire to kitchen before payment). */
+export function printKitchenTicketsOnly(tickets: KitchenTicketPayload[], d: Date = new Date()): void {
+  if (tickets.length === 0) return
+  const kotSection = tickets.map((t) => `<div class="kot-page">${renderKotInnerHtml(t, d)}</div>`).join("")
+  runPrint(buildPrintDocumentHtml("", kotSection))
 }
 
 export function SinhalaReceiptDialog({
@@ -302,7 +330,9 @@ export function SinhalaReceiptDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="text-center">Order complete</DialogTitle>
+          <DialogTitle className="text-center">
+            {payload.kitchenTickets.length === 0 ? "Payment complete" : "Order complete"}
+          </DialogTitle>
         </DialogHeader>
 
         <div className="mt-4 space-y-3">
@@ -349,14 +379,18 @@ export function SinhalaReceiptDialog({
             </table>
 
             <div className="space-y-1 text-xs border-t pt-2">
-              <div className="flex justify-between">
-                <span>{customerLabels.sub}</span>
-                <span>{formatCurrency(payload.customer.subtotal)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>{customerLabels.tax}</span>
-                <span>{formatCurrency(payload.customer.taxAmount)}</span>
-              </div>
+              {payload.customer.taxAmount > 0 ? (
+                <>
+                  <div className="flex justify-between">
+                    <span>{customerLabels.sub}</span>
+                    <span>{formatCurrency(payload.customer.subtotal)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>{customerLabels.tax}</span>
+                    <span>{formatCurrency(payload.customer.taxAmount)}</span>
+                  </div>
+                </>
+              ) : null}
               <div className="flex justify-between text-base font-bold pt-1">
                 <span>{customerLabels.grand}</span>
                 <span>{formatCurrency(payload.customer.total)}</span>
@@ -370,7 +404,7 @@ export function SinhalaReceiptDialog({
               type="button"
               onClick={() => printCustomerBillAndKitchenTickets(payload.customer, payload.kitchenTickets, d)}
             >
-              Print receipt &amp; kitchen tickets
+              {payload.kitchenTickets.length === 0 ? "Print customer bill" : "Print receipt & kitchen tickets"}
             </Button>
           </div>
         </div>

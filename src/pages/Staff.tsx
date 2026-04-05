@@ -9,10 +9,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatCurrency, formatCurrencyCompact } from "@/lib/utils";
+import { toast } from "sonner";
 import {
   createEmployee,
   deleteEmployee,
   getAllEmployees,
+  patchEmployee,
   PAID_LEAVE_DAYS_PER_MONTH,
   type Employee,
 } from "@/lib/employeesApi";
@@ -29,6 +31,15 @@ const Staff = () => {
     role: "",
     paymentPerDay: "",
   });
+
+  const [detailStaff, setDetailStaff] = useState<Employee | null>(null);
+  const [detailForm, setDetailForm] = useState({
+    name: "",
+    role: "",
+    paymentPerDay: "",
+    monthlyLoanAdvanceDeductionLkr: "",
+  });
+  const [detailSaving, setDetailSaving] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -63,7 +74,49 @@ const Staff = () => {
   const handleRemove = async (id: string) => {
     if (!window.confirm("Remove this employee? Attendance history for this ID stays in local storage.")) return;
     await deleteEmployee(id);
+    if (detailStaff?.employeeId === id) setDetailStaff(null);
     await load();
+  };
+
+  const openEmployeeDetail = (e: Employee) => {
+    setDetailStaff(e);
+    setDetailForm({
+      name: e.name,
+      role: e.role,
+      paymentPerDay: String(e.paymentPerDay),
+      monthlyLoanAdvanceDeductionLkr: String(e.monthlyLoanAdvanceDeductionLkr ?? 0),
+    });
+  };
+
+  const handleSaveEmployeeDetail = async () => {
+    if (!detailStaff) return;
+    const rate = Number.parseFloat(detailForm.paymentPerDay);
+    const ded = Number.parseFloat(detailForm.monthlyLoanAdvanceDeductionLkr);
+    if (!detailForm.name.trim() || !detailForm.role.trim() || !Number.isFinite(rate) || rate < 0) {
+      toast.error("Name, role, and a valid daily rate are required.");
+      return;
+    }
+    if (!Number.isFinite(ded) || ded < 0) {
+      toast.error("Deduction must be zero or a positive number.");
+      return;
+    }
+    setDetailSaving(true);
+    try {
+      const updated = await patchEmployee(detailStaff.employeeId, {
+        name: detailForm.name.trim(),
+        role: detailForm.role.trim(),
+        paymentPerDay: rate,
+        monthlyLoanAdvanceDeductionLkr: ded,
+      });
+      setStaffMembers((prev) => prev.map((p) => (p.employeeId === updated.employeeId ? updated : p)));
+      setDetailStaff(updated);
+      toast.success("Employee updated. Net pay uses this deduction on Attendance → Monthly payroll.");
+    } catch (err) {
+      console.error(err);
+      toast.error("Could not save employee.");
+    } finally {
+      setDetailSaving(false);
+    }
   };
 
   return (
@@ -73,9 +126,10 @@ const Staff = () => {
           <div>
             <h1 className="text-3xl font-bold">Staff &amp; HR Management</h1>
             <p className="text-muted-foreground mt-1">
-              Add employees with <strong>daily pay</strong> and <strong>role</strong>. Each staff member gets up to{" "}
-              <strong>{PAID_LEAVE_DAYS_PER_MONTH} paid leave days per month</strong>; extra leave days in that month are{" "}
-              <strong>unpaid</strong>. Record daily status in{" "}
+              Add employees with <strong>daily pay</strong> and <strong>role</strong>. Click an employee&apos;s{" "}
+              <strong>name</strong> to set <strong>loan / advance deductions</strong> (manual amount per month). Each staff
+              member gets up to <strong>{PAID_LEAVE_DAYS_PER_MONTH} paid leave days per month</strong>; extra leave is{" "}
+              <strong>unpaid</strong>. Record daily status and download salary slips from{" "}
               <Link to="/attendance" className="text-primary font-medium underline underline-offset-2">
                 Attendance
               </Link>
@@ -160,7 +214,7 @@ const Staff = () => {
                     {loading ? "—" : formatCurrencyCompact(estimatedMonthlyPayroll)}
                   </p>
                   <p className="text-sm text-muted-foreground mt-1">
-                    ~{ASSUMED_WORK_DAYS_PER_MONTH} paid days × daily rate (before real attendance)
+                    ~{ASSUMED_WORK_DAYS_PER_MONTH} paid days × daily rate (before attendance & loan deductions)
                   </p>
                 </div>
                 <DollarSign className="w-10 h-10 text-success" />
@@ -206,9 +260,20 @@ const Staff = () => {
                           .toUpperCase()}
                       </div>
                       <div>
-                        <p className="font-semibold">{staff.name}</p>
+                        <button
+                          type="button"
+                          className="font-semibold text-left hover:underline decoration-primary underline-offset-2 text-primary"
+                          onClick={() => openEmployeeDetail(staff)}
+                        >
+                          {staff.name}
+                        </button>
                         <p className="text-sm text-muted-foreground">{staff.role}</p>
                         <p className="text-xs text-muted-foreground font-mono">{staff.employeeId}</p>
+                        {staff.monthlyLoanAdvanceDeductionLkr > 0 ? (
+                          <p className="text-xs text-amber-800 dark:text-amber-200 mt-1">
+                            Monthly deduction: {formatCurrency(staff.monthlyLoanAdvanceDeductionLkr)}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                     <div className="flex items-center gap-4 flex-wrap">
@@ -232,6 +297,69 @@ const Staff = () => {
             )}
           </CardContent>
         </Card>
+
+        <Dialog open={detailStaff !== null} onOpenChange={(open) => !open && setDetailStaff(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Employee details</DialogTitle>
+            </DialogHeader>
+            {detailStaff && (
+              <div className="grid gap-4 py-2">
+                <div className="grid gap-2">
+                  <Label htmlFor="det-name">Full name</Label>
+                  <Input
+                    id="det-name"
+                    value={detailForm.name}
+                    onChange={(e) => setDetailForm((f) => ({ ...f, name: e.target.value }))}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="det-role">Role</Label>
+                  <Input
+                    id="det-role"
+                    value={detailForm.role}
+                    onChange={(e) => setDetailForm((f) => ({ ...f, role: e.target.value }))}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="det-day">Payment per day (LKR)</Label>
+                  <Input
+                    id="det-day"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={detailForm.paymentPerDay}
+                    onChange={(e) => setDetailForm((f) => ({ ...f, paymentPerDay: e.target.value }))}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="det-ded">Monthly loan / advance deduction (LKR)</Label>
+                  <Input
+                    id="det-ded"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={detailForm.monthlyLoanAdvanceDeductionLkr}
+                    onChange={(e) => setDetailForm((f) => ({ ...f, monthlyLoanAdvanceDeductionLkr: e.target.value }))}
+                  />
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Enter how much to recover this month from salary (loans, advances). You choose the amount each time you
+                    update it. <strong className="text-foreground">Net pay</strong> = gross (from attendance) minus this
+                    figure. Download the slip from <Link to="/attendance">Attendance → Monthly payroll</Link>.
+                  </p>
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button type="button" variant="outline" onClick={() => setDetailStaff(null)} disabled={detailSaving}>
+                    Close
+                  </Button>
+                  <Button type="button" onClick={() => void handleSaveEmployeeDetail()} disabled={detailSaving}>
+                    {detailSaving ? "Saving…" : "Save changes"}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
 
         <Card className="max-w-2xl">
           <CardHeader>

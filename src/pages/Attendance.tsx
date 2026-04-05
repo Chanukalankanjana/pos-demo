@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Calendar, Download } from "lucide-react";
-import { generatePDF } from "@/lib/pdfUtils";
+import { Calendar, Download, FileDown } from "lucide-react";
+import { generatePDF, generateSalarySlipPdf } from "@/lib/pdfUtils";
 import { StatCard } from "@/components/Dashboard/StatCard";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,7 +16,7 @@ import {
   getAllAttendanceRecords,
   upsertAttendanceForDay,
   summarizeMonth,
-  payrollForMonth,
+  netPayrollForMonth,
   type AttendanceStatus,
 } from "@/lib/attendanceRecordsApi";
 
@@ -79,10 +79,33 @@ const Attendance = () => {
   const payrollRows = useMemo(() => {
     return employees.map((emp) => {
       const sum = summarizeMonth(records, emp.employeeId, payrollMonth);
-      const gross = payrollForMonth(emp.paymentPerDay, sum);
-      return { emp, sum, gross };
+      const pay = netPayrollForMonth(emp.paymentPerDay, emp.monthlyLoanAdvanceDeductionLkr, sum);
+      return { emp, sum, ...pay };
     });
   }, [employees, records, payrollMonth]);
+
+  const downloadSlip = (row: (typeof payrollRows)[number]) => {
+    try {
+      generateSalarySlipPdf({
+        employeeName: row.emp.name,
+        employeeId: row.emp.employeeId,
+        role: row.emp.role,
+        periodYm: payrollMonth,
+        paymentPerDay: row.emp.paymentPerDay,
+        present: row.sum.present,
+        leave: row.sum.leave,
+        absent: row.sum.absent,
+        paidLeaveDays: row.sum.paidLeaveDays,
+        unpaidLeaveDays: row.sum.unpaidLeaveDays,
+        paidDays: row.sum.paidDays,
+        grossLkr: row.grossLkr,
+        deductionLkr: row.deductionLkr,
+        netLkr: row.netLkr,
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   const handleExportReport = async () => {
     try {
@@ -175,7 +198,8 @@ const Attendance = () => {
               <CardHeader>
                 <CardTitle>Monthly payroll estimate</CardTitle>
                 <CardDescription>
-                  Paid days = present + min(leave, {PAID_LEAVE_DAYS_PER_MONTH}) in the month. Payment = paid days × daily rate.
+                  Paid days = present + min(leave, {PAID_LEAVE_DAYS_PER_MONTH}) in the month. Gross = paid days × daily rate.
+                  Net = gross minus each employee&apos;s monthly loan/advance deduction (set under Staff — click the name).
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -194,20 +218,37 @@ const Attendance = () => {
                       <TableHead className="text-center">Paid leave days</TableHead>
                       <TableHead className="text-center">Unpaid leave</TableHead>
                       <TableHead className="text-right">Paid days</TableHead>
-                      <TableHead className="text-right">Gross (LKR)</TableHead>
+                      <TableHead className="text-right whitespace-nowrap">Gross (LKR)</TableHead>
+                      <TableHead className="text-right whitespace-nowrap">Deduction</TableHead>
+                      <TableHead className="text-right whitespace-nowrap">Net (LKR)</TableHead>
+                      <TableHead className="text-right w-[1%]">Slip</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {payrollRows.map(({ emp, sum, gross }) => (
-                      <TableRow key={emp.employeeId}>
-                        <TableCell className="font-medium">{emp.name}</TableCell>
-                        <TableCell className="text-center">{sum.present}</TableCell>
-                        <TableCell className="text-center">{sum.leave}</TableCell>
-                        <TableCell className="text-center">{sum.absent}</TableCell>
-                        <TableCell className="text-center">{sum.paidLeaveDays}</TableCell>
-                        <TableCell className="text-center">{sum.unpaidLeaveDays}</TableCell>
-                        <TableCell className="text-right font-semibold">{sum.paidDays}</TableCell>
-                        <TableCell className="text-right font-semibold">{formatCurrency(gross)}</TableCell>
+                    {payrollRows.map((row) => (
+                      <TableRow key={row.emp.employeeId}>
+                        <TableCell className="font-medium">{row.emp.name}</TableCell>
+                        <TableCell className="text-center">{row.sum.present}</TableCell>
+                        <TableCell className="text-center">{row.sum.leave}</TableCell>
+                        <TableCell className="text-center">{row.sum.absent}</TableCell>
+                        <TableCell className="text-center">{row.sum.paidLeaveDays}</TableCell>
+                        <TableCell className="text-center">{row.sum.unpaidLeaveDays}</TableCell>
+                        <TableCell className="text-right font-semibold">{row.sum.paidDays}</TableCell>
+                        <TableCell className="text-right font-semibold">{formatCurrency(row.grossLkr)}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{formatCurrency(row.deductionLkr)}</TableCell>
+                        <TableCell className="text-right font-semibold">{formatCurrency(row.netLkr)}</TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="gap-1"
+                            onClick={() => downloadSlip(row)}
+                          >
+                            <FileDown className="h-3.5 w-3.5" />
+                            PDF
+                          </Button>
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

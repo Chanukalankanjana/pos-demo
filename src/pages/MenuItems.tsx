@@ -8,8 +8,8 @@ import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Plus, UtensilsCrossed, Trash2, Pencil, X } from "lucide-react"
 import { toast } from "sonner"
-import { formatCurrency } from "@/lib/utils"
-import { formatItemCode } from "@/lib/itemCode"
+import { formatCurrency, cn } from "@/lib/utils"
+import { formatItemCode, parseProductIdInput } from "@/lib/itemCode"
 import {
   getAllProducts,
   createProduct,
@@ -44,7 +44,7 @@ const MenuItems = () => {
   const [newItem, setNewItem] = useState({
     name: "",
     nameSinhala: "",
-    price: "", // base/default price
+    price: "", // small / default selling price
     categoryId: "" as number | "",
     kitchen: "KITCHEN_1" as Kitchen,
     description: "",
@@ -52,8 +52,10 @@ const MenuItems = () => {
     hasPortionPricing: false,
     mediumPrice: "",
     largePrice: "",
+    skipKitchenTicket: false,
   })
 
+  const [productIdDraft, setProductIdDraft] = useState("")
   const [recipeLines, setRecipeLines] = useState<RecipeLineForm[]>([])
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [isSaving, setIsSaving] = useState(false)
@@ -131,7 +133,9 @@ const MenuItems = () => {
       hasPortionPricing: false,
       mediumPrice: "",
       largePrice: "",
+      skipKitchenTicket: false,
     })
+    setProductIdDraft("")
     setRecipeLines([])
     setImageFile(null)
     setUploadError(null)
@@ -190,10 +194,24 @@ const MenuItems = () => {
   const handleSaveItem = async () => {
     if (!newItem.name || !newItem.price || newItem.categoryId === "") return
 
+    const isEditing = editingProductId !== null
+    let createProductId: number | undefined
+    if (!isEditing) {
+      const parsedId = parseProductIdInput(productIdDraft)
+      if (parsedId == null) {
+        setUploadError("Enter a valid item ID (e.g. 15 or ITM-0015).")
+        return
+      }
+      if (items.some((p) => p.productId === parsedId)) {
+        setUploadError(`${formatItemCode(parsedId)} is already used. Choose another ID.`)
+        return
+      }
+      createProductId = parsedId
+    }
+
     setIsSaving(true)
     setUploadError(null)
 
-    const isEditing = editingProductId !== null
     const existingProduct = isEditing ? items.find((p) => p.productId === editingProductId) : null
 
     const basePrice = Number.parseFloat(newItem.price)
@@ -203,8 +221,10 @@ const MenuItems = () => {
       return
     }
 
+    const isShowcase = newItem.skipKitchenTicket
+
     let portionPrices: PortionPrices = {}
-    if (newItem.hasPortionPricing) {
+    if (!isShowcase && newItem.hasPortionPricing) {
       const medium = Number.parseFloat(newItem.mediumPrice)
       const large = Number.parseFloat(newItem.largePrice)
       if (!Number.isFinite(medium) || medium < 0 || !Number.isFinite(large) || large < 0) {
@@ -215,46 +235,51 @@ const MenuItems = () => {
       portionPrices = { MEDIUM: medium, LARGE: large }
     }
 
-    // Build recipe payload (kg)
-    const recipe = recipeLines
-      .map((l) => ({
-        itemId: l.itemId === "" ? NaN : l.itemId,
-        quantity: Number.parseFloat(l.quantity),
-      }))
-      .filter((l) => Number.isFinite(l.itemId) && Number.isFinite(l.quantity) && l.quantity > 0)
+    // Build recipe payload (kg) — showcase items never use recipe
+    const recipe = isShowcase
+      ? []
+      : recipeLines
+          .map((l) => ({
+            itemId: l.itemId === "" ? NaN : l.itemId,
+            quantity: Number.parseFloat(l.quantity),
+          }))
+          .filter((l) => Number.isFinite(l.itemId) && Number.isFinite(l.quantity) && l.quantity > 0)
 
-    // If user started recipe but left invalid rows, block save to match backend expectations
-    const hasAnyRecipeInput = recipeLines.some((l) => l.itemId !== "" || l.quantity.trim() !== "")
-    const allRecipeValid = recipe.length === recipeLines.filter((l) => l.itemId !== "" || l.quantity.trim() !== "").length
-    if (hasAnyRecipeInput && !allRecipeValid) {
-      setUploadError("Recipe has invalid rows. Select an item and enter a quantity (kg) > 0 for each row.")
-      setIsSaving(false)
-      return
+    if (!isShowcase) {
+      const hasAnyRecipeInput = recipeLines.some((l) => l.itemId !== "" || l.quantity.trim() !== "")
+      const allRecipeValid = recipe.length === recipeLines.filter((l) => l.itemId !== "" || l.quantity.trim() !== "").length
+      if (hasAnyRecipeInput && !allRecipeValid) {
+        setUploadError("Recipe has invalid rows. Select an item and enter a quantity (kg) > 0 for each row.")
+        setIsSaving(false)
+        return
+      }
     }
 
     const imageUrl: string | null =
       (existingProduct?.imageUrl ?? null) === "/placeholder.svg" ? null : (existingProduct?.imageUrl ?? null)
 
     const costPrice =
-      recipe.length > 0 && calculatedIngredientCost != null
+      !isShowcase && recipe.length > 0 && calculatedIngredientCost != null
         ? calculatedIngredientCost
         : Math.round(basePrice * 0.45)
 
     try {
       const payload = {
         categoryId: newItem.categoryId,
-        kitchen: newItem.kitchen,
+        kitchen: isShowcase ? ("KITCHEN_1" as Kitchen) : newItem.kitchen,
         name: newItem.name.trim(),
-        nameSinhala: newItem.nameSinhala.trim() || null,
+        nameSinhala: isShowcase ? null : newItem.nameSinhala.trim() || null,
         description: newItem.description.trim(),
         costPrice,
-        sellingPrice: newItem.hasPortionPricing && portionPrices.MEDIUM != null ? portionPrices.MEDIUM : basePrice,
+        sellingPrice:
+          !isShowcase && newItem.hasPortionPricing && portionPrices.MEDIUM != null ? portionPrices.MEDIUM : basePrice,
         imageUrl,
         isAvailable: true,
 
-        hasPortionPricing: newItem.hasPortionPricing,
-        portionPrices,
+        hasPortionPricing: isShowcase ? false : newItem.hasPortionPricing,
+        portionPrices: isShowcase ? {} : portionPrices,
         recipe,
+        skipKitchenTicket: isShowcase,
       }
 
       // 1) Create or update product (JSON)
@@ -264,7 +289,7 @@ const MenuItems = () => {
         setItems((prev) => prev.map((p) => (p.productId === saved.productId ? saved : p)))
         toast.success(`Item ${formatItemCode(saved.productId)} updated`)
       } else {
-        saved = await createProduct(payload)
+        saved = await createProduct({ ...payload, productId: createProductId })
         setItems((prev) => [...prev, saved])
         toast.success(`Item saved with ID ${formatItemCode(saved.productId)}`)
       }
@@ -285,7 +310,7 @@ const MenuItems = () => {
       setIsDialogOpen(false)
     } catch (e) {
       console.error(e)
-      setUploadError("Failed to save product. Please try again.")
+      setUploadError(e instanceof Error ? e.message : "Failed to save product. Please try again.")
     } finally {
       setIsSaving(false)
     }
@@ -306,7 +331,25 @@ const MenuItems = () => {
     !!newItem.name &&
     !!newItem.price &&
     newItem.categoryId !== "" &&
-    (!newItem.hasPortionPricing || (!!newItem.mediumPrice && !!newItem.largePrice))
+    (editingProductId != null || parseProductIdInput(productIdDraft) != null) &&
+    (newItem.skipKitchenTicket || !newItem.hasPortionPricing || (!!newItem.mediumPrice && !!newItem.largePrice))
+
+  const setItemKind = (showcase: boolean) => {
+    setNewItem((prev) => ({
+      ...prev,
+      skipKitchenTicket: showcase,
+      ...(showcase
+        ? {
+            hasPortionPricing: false,
+            mediumPrice: "",
+            largePrice: "",
+            nameSinhala: "",
+            kitchen: "KITCHEN_1" as Kitchen,
+          }
+        : {}),
+    }))
+    if (showcase) setRecipeLines([])
+  }
 
   return (
     <DashboardLayout>
@@ -337,6 +380,7 @@ const MenuItems = () => {
               onClick={() => {
                 setEditingProductId(null)
                 resetForm()
+                setProductIdDraft(String(nextProductId))
               }}
             >
               <Button className="gap-2">
@@ -347,25 +391,79 @@ const MenuItems = () => {
 
             <DialogContent className="flex max-h-[90dvh] w-[calc(100vw-1.5rem)] max-w-[520px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]">
               <DialogHeader className="shrink-0 space-y-1.5 px-6 pb-2 pt-6 pr-14 text-left">
-                <DialogTitle>{editingProductId ? "Edit Menu Item" : "Add New Menu Item"}</DialogTitle>
+                <DialogTitle>
+                  {editingProductId != null
+                    ? newItem.skipKitchenTicket
+                      ? "Edit showcase item"
+                      : "Edit menu item"
+                    : newItem.skipKitchenTicket
+                      ? "Add showcase item"
+                      : "Add menu item"}
+                </DialogTitle>
               </DialogHeader>
 
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-2">
               <div className="grid gap-4 pb-2">
-                <div className="rounded-lg border border-muted bg-muted/30 px-3 py-2.5 text-sm">
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                    <span className="text-muted-foreground">Item ID</span>
-                    {editingProductId != null ? (
+                {editingProductId != null ? (
+                  <div className="rounded-lg border border-muted bg-muted/30 px-3 py-2.5 text-sm">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                      <span className="text-muted-foreground">Item ID</span>
                       <span className="font-mono font-semibold tabular-nums">{formatItemCode(editingProductId)}</span>
-                    ) : (
-                      <span className="font-mono font-semibold tabular-nums">{formatItemCode(nextProductId)}</span>
-                    )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1.5">ID cannot be changed after the item is created.</p>
                   </div>
-                  {editingProductId == null && (
-                    <p className="text-xs text-muted-foreground mt-1.5">
-                      Generated automatically when you save. You do not need to type an ID.
+                ) : (
+                  <div className="grid gap-2">
+                    <Label htmlFor="item-product-id">Item ID</Label>
+                    <Input
+                      id="item-product-id"
+                      className="font-mono tabular-nums"
+                      value={productIdDraft}
+                      onChange={(e) => setProductIdDraft(e.target.value)}
+                      placeholder={`Suggested: ${formatItemCode(nextProductId)}`}
+                      inputMode="numeric"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Type a number (e.g. <span className="font-mono">42</span>) or code (e.g.{" "}
+                      <span className="font-mono">ITM-0042</span>). Must be unique. Default is the next free ID — edit if
+                      you need a specific code.
                     </p>
-                  )}
+                  </div>
+                )}
+
+                <div className="grid gap-2">
+                  <Label>Item kind</Label>
+                  <div className="flex gap-1 rounded-lg border border-input bg-muted/30 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setItemKind(false)}
+                      className={cn(
+                        "flex-1 rounded-md px-3 py-2.5 text-sm font-medium transition-colors",
+                        !newItem.skipKitchenTicket
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      Menu item
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setItemKind(true)}
+                      className={cn(
+                        "flex-1 rounded-md px-3 py-2.5 text-sm font-medium transition-colors",
+                        newItem.skipKitchenTicket
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      Showcase · bill only
+                    </button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {newItem.skipKitchenTicket
+                      ? "Receipt & POS only (no KOT). Fill name, category, price, and image — like drinks or retail."
+                      : "Kitchen tickets, portions, recipe, and Sinhala name when needed."}
+                  </p>
                 </div>
 
                 <div className="grid gap-2">
@@ -378,16 +476,18 @@ const MenuItems = () => {
                   />
                 </div>
 
-                <div className="grid gap-2">
-                  <Label htmlFor="item-name-si">Kitchen ticket name (Sinhala, optional)</Label>
-                  <Input
-                    id="item-name-si"
-                    value={newItem.nameSinhala}
-                    onChange={(e) => setNewItem({ ...newItem, nameSinhala: e.target.value })}
-                    placeholder="Shown on Sinhala KOT; English name if left empty"
-                    style={{ fontFamily: "'Noto Sans Sinhala', system-ui, sans-serif" }}
-                  />
-                </div>
+                {!newItem.skipKitchenTicket && (
+                  <div className="grid gap-2">
+                    <Label htmlFor="item-name-si">Kitchen ticket name (Sinhala, optional)</Label>
+                    <Input
+                      id="item-name-si"
+                      value={newItem.nameSinhala}
+                      onChange={(e) => setNewItem({ ...newItem, nameSinhala: e.target.value })}
+                      placeholder="Shown on Sinhala KOT; English name if left empty"
+                      style={{ fontFamily: "'Noto Sans Sinhala', system-ui, sans-serif" }}
+                    />
+                  </div>
+                )}
 
                 <div className="grid gap-2">
                   <Label htmlFor="item-category">Category</Label>
@@ -452,36 +552,41 @@ const MenuItems = () => {
                   )}
                 </div>
 
-                <div className="grid gap-2">
-                  <Label htmlFor="item-kitchen">Kitchen</Label>
-                  <select
-                    id="item-kitchen"
-                    value={newItem.kitchen}
-                    onChange={(e) => setNewItem({ ...newItem, kitchen: e.target.value as Kitchen })}
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
-                  >
-                    <option value="KITCHEN_1">Kitchen 1</option>
-                    <option value="KITCHEN_2">Kitchen 2</option>
-                  </select>
-                  <p className="text-xs text-muted-foreground">Orders for this item route to the selected station.</p>
-                </div>
+                {!newItem.skipKitchenTicket && (
+                  <div className="grid gap-2">
+                    <Label htmlFor="item-kitchen">Kitchen</Label>
+                    <select
+                      id="item-kitchen"
+                      value={newItem.kitchen}
+                      onChange={(e) => setNewItem({ ...newItem, kitchen: e.target.value as Kitchen })}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
+                    >
+                      <option value="KITCHEN_1">Kitchen 1</option>
+                      <option value="KITCHEN_2">Kitchen 2</option>
+                    </select>
+                    <p className="text-xs text-muted-foreground">Which station gets this item on the KOT.</p>
+                  </div>
+                )}
 
                 <div className="grid gap-2">
-                  <Label htmlFor="item-price">Base Price</Label>
+                  <Label htmlFor="item-price">{newItem.skipKitchenTicket ? "Price" : "Small Price"}</Label>
                   <Input
                     id="item-price"
                     type="number"
                     min="0"
                     value={newItem.price}
                     onChange={(e) => setNewItem({ ...newItem, price: e.target.value })}
-                    placeholder="E.g. 450"
+                    placeholder={newItem.skipKitchenTicket ? "E.g. 120" : "E.g. 350"}
                   />
                   <p className="text-xs text-muted-foreground">
-                    If portion pricing is enabled, Medium will be used as the default selling price.
+                    {newItem.skipKitchenTicket
+                      ? "Selling price on the bill and POS."
+                      : "Without portions, this is the selling price. With portion pricing, this is the small tier; Medium is the default POS/list price."}
                   </p>
                 </div>
 
-                {/* Portion pricing */}
+                {/* Portion pricing — menu items only */}
+                {!newItem.skipKitchenTicket && (
                 <div className="rounded-md border border-muted p-3 space-y-3">
                   <div className="flex items-center justify-between gap-4">
                     <div>
@@ -532,20 +637,26 @@ const MenuItems = () => {
                     </div>
                   )}
                 </div>
+                )}
 
                 <div className="grid gap-2">
-                  <Label htmlFor="item-description">Description / Ingredients</Label>
+                  <Label htmlFor="item-description">
+                    {newItem.skipKitchenTicket ? "Note (optional)" : "Description / Ingredients"}
+                  </Label>
                   <textarea
                     id="item-description"
                     value={newItem.description}
                     onChange={(e) => setNewItem({ ...newItem, description: e.target.value })}
-                    rows={3}
+                    rows={newItem.skipKitchenTicket ? 2 : 3}
                     className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    placeholder="Short description, key ingredients, etc."
+                    placeholder={
+                      newItem.skipKitchenTicket ? "Optional short note on the menu card" : "Short description, key ingredients, etc."
+                    }
                   />
                 </div>
 
-                {/* Recipe */}
+                {/* Recipe — menu items only */}
+                {!newItem.skipKitchenTicket && (
                 <div className="rounded-md border border-muted p-3 space-y-3">
                   <div className="flex items-start justify-between gap-4">
                     <div>
@@ -633,6 +744,7 @@ const MenuItems = () => {
                     </div>
                   )}
                 </div>
+                )}
 
                 <div className="grid gap-2">
                   <Label htmlFor="item-image-file">Item Image</Label>
@@ -700,9 +812,15 @@ const MenuItems = () => {
 
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="text-sm text-accent font-semibold">{formatCurrency(item.sellingPrice)}</p>
-                            <Badge variant="secondary" className="text-[10px]">
-                              {(item.kitchen ?? "KITCHEN_1") === "KITCHEN_2" ? "Kitchen 2" : "Kitchen 1"}
-                            </Badge>
+                            {item.skipKitchenTicket ? (
+                              <Badge variant="outline" className="text-[10px] border-amber-500/50 text-amber-800 bg-amber-50">
+                                Showcase · no KOT
+                              </Badge>
+                            ) : (
+                              <Badge variant="secondary" className="text-[10px]">
+                                {(item.kitchen ?? "KITCHEN_1") === "KITCHEN_2" ? "Kitchen 2" : "Kitchen 1"}
+                              </Badge>
+                            )}
                           </div>
                           <p className="text-xs text-muted-foreground">Cost: {formatCurrency(item.costPrice)}</p>
 
@@ -723,6 +841,7 @@ const MenuItems = () => {
                             className="h-8 w-8"
                             onClick={() => {
                               setEditingProductId(item.productId)
+                              setProductIdDraft(String(item.productId))
                               setNewItem({
                                 name: item.name,
                                 nameSinhala: item.nameSinhala ?? "",
@@ -734,6 +853,7 @@ const MenuItems = () => {
                                 hasPortionPricing: !!item.hasPortionPricing,
                                 mediumPrice: item.portionPrices?.MEDIUM != null ? String(item.portionPrices.MEDIUM) : "",
                                 largePrice: item.portionPrices?.LARGE != null ? String(item.portionPrices.LARGE) : "",
+                                skipKitchenTicket: item.skipKitchenTicket === true,
                               })
 
                               setRecipeLines(

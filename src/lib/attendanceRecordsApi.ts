@@ -71,3 +71,21 @@ export function summarizeMonth(records: AttendanceRecord[], employeeId: string, 
 export function payrollForMonth(paymentPerDay: number, summary: ReturnType<typeof summarizeMonth>) {
   return Math.round(summary.paidDays * paymentPerDay * 100) / 100
 }
+
+export type MonthPayrollBreakdown = {
+  grossLkr: number
+  deductionLkr: number
+  netLkr: number
+}
+
+/** Gross from attendance × daily rate, minus manual loan/advance recovery (per employee, per month in settings). */
+export function netPayrollForMonth(
+  paymentPerDay: number,
+  monthlyDeductionLkr: number,
+  summary: ReturnType<typeof summarizeMonth>,
+): MonthPayrollBreakdown {
+  const grossLkr = payrollForMonth(paymentPerDay, summary)
+  const deductionLkr = Math.max(0, monthlyDeductionLkr)
+  const netLkr = Math.max(0, Math.round((grossLkr - deductionLkr) * 100) / 100)
+  return { grossLkr, deductionLkr, netLkr }
+}

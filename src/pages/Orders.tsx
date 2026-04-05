@@ -15,11 +15,11 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { ClipboardList, Search, Pencil, Trash2, Clock, CheckCircle, XCircle } from "lucide-react"
+import { ClipboardList, Search, Pencil, Trash2, Clock, CheckCircle, XCircle, Plus } from "lucide-react"
 import { toast } from "sonner"
 import { cn, formatCurrency } from "@/lib/utils"
 import { ORDER_DELETE_AUTH } from "@/config/orderDeleteCredentials"
-import { getAllProducts } from "@/lib/productsApi"
+import { getAllProducts, type ProductResponseDto } from "@/lib/productsApi"
 import {
   getAllOrders,
   patchOrder,
@@ -29,7 +29,15 @@ import {
   type PaymentMethod,
   type OrderType,
 } from "@/lib/ordersApi"
-import { getAllOrderItems, type OrderItemResponseDto } from "@/lib/orderItemsApi"
+import {
+  getAllOrderItems,
+  type OrderItemResponseDto,
+  createOrderItem,
+  deleteOrderItem,
+  patchOrderItem,
+  type PortionType,
+} from "@/lib/orderItemsApi"
+import { SinhalaReceiptDialog, type OrderBillsPayload } from "@/components/POS/SinhalaReceiptDialog"
 
 const statusLabels: Record<OrderStatus, string> = {
   NEW: "Pending",
@@ -72,6 +80,51 @@ function mergeOrderResponseIntoUi(existing: UiOrder, fromApi: OrderResponseDto):
   return { ...existing, ...rest }
 }
 
+const paymentLabels: Record<PaymentMethod, string> = {
+  CASH: "Cash",
+  CARD: "Card",
+  BANK_TRANSFER: "Bank transfer",
+  CASH_ON_DELIVERY: "Cash on delivery",
+}
+
+const orderTypeLabels: Record<OrderType, string> = {
+  DINE_IN: "Dine in",
+  TAKE_AWAY: "Take away",
+  DELIVERY: "Delivery",
+}
+
+function portionLabelForBill(p: PortionType | null | undefined): string | undefined {
+  if (p === "MEDIUM") return "Medium"
+  if (p === "LARGE") return "Large"
+  return undefined
+}
+
+function buildOrderBillPayload(order: UiOrder): OrderBillsPayload {
+  const subtotal = order.items.reduce((s, i) => s + i.subtotal, 0)
+  const lines = order.items.map((i) => ({
+    name: i.name,
+    qty: i.quantity,
+    unitPrice: i.unitPrice,
+    lineTotal: i.subtotal,
+    portion: portionLabelForBill(i.portionType),
+  }))
+  const tableLabel =
+    order.orderType === "DINE_IN" && order.tableNumber != null ? String(order.tableNumber) : "—"
+  return {
+    customer: {
+      orderId: order.orderId,
+      lines,
+      subtotal: Number(subtotal.toFixed(2)),
+      taxAmount: order.taxAmount,
+      total: order.totalAmount,
+      tableLabel,
+      paymentLabel: paymentLabels[normalizePaymentMethod(order.paymentMethod)],
+      orderTypeLabel: orderTypeLabels[order.orderType],
+    },
+    kitchenTickets: [],
+  }
+}
+
 function formatTime(iso: string) {
   const d = new Date(iso)
   const now = new Date()
@@ -107,6 +160,8 @@ export default function Orders() {
   const [deleteAuthPassword, setDeleteAuthPassword] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [paidBillOpen, setPaidBillOpen] = useState(false)
+  const [paidBillPayload, setPaidBillPayload] = useState<OrderBillsPayload | null>(null)
 
   const refresh = async () => {
     setIsLoading(true)
@@ -174,11 +229,17 @@ export default function Orders() {
   const handleStatusChange = async (order: UiOrder, status: OrderStatus) => {
     try {
       const updated = await patchOrder(order.orderId, { status })
+      const merged = mergeOrderResponseIntoUi(order, updated)
       setOrders((prev) =>
         prev.map((o) => (o.orderId === updated.orderId ? mergeOrderResponseIntoUi(o, updated) : o)),
       )
+      if (status === "PAID") {
+        setPaidBillPayload(buildOrderBillPayload(merged))
+        setPaidBillOpen(true)
+      }
     } catch (e) {
       console.error(e)
+      toast.error("Failed to update order status")
     }
   }
 
@@ -284,11 +345,19 @@ export default function Orders() {
         <EditOrderDialog
           order={editingOrder}
           onClose={() => setEditingOrder(null)}
-          onSaved={(updated) => {
-            setOrders((prev) =>
-              prev.map((o) => (o.orderId === updated.orderId ? mergeOrderResponseIntoUi(o, updated) : o)),
-            )
+          onRefresh={refresh}
+          onShowPaidBill={(payload) => {
+            setPaidBillPayload(payload)
+            setPaidBillOpen(true)
           }}
+        />
+        <SinhalaReceiptDialog
+          open={paidBillOpen}
+          onOpenChange={(v) => {
+            setPaidBillOpen(v)
+            if (!v) setPaidBillPayload(null)
+          }}
+          payload={paidBillPayload}
         />
 
         <Dialog
@@ -467,53 +536,248 @@ function OrderCard({
   )
 }
 
+type DraftExistingLine = {
+  kind: "existing"
+  orderItemId: number
+  productId: number
+  name: string
+  portionType: PortionType | null
+  unitPrice: number
+  quantity: number
+}
+
+type DraftNewLine = {
+  kind: "new"
+  tempId: string
+  productId: number | ""
+  name: string
+  portionType: PortionType | null
+  unitPrice: number
+  quantity: number
+}
+
+type DraftLine = DraftExistingLine | DraftNewLine
+
+function unitPriceForOrderLine(product: ProductResponseDto, portion: PortionType | null): number {
+  if (!product.hasPortionPricing) return product.sellingPrice
+  if (portion === "MEDIUM" || portion === "LARGE") {
+    const v = product.portionPrices?.[portion]
+    if (typeof v === "number" && Number.isFinite(v)) return v
+  }
+  return product.sellingPrice
+}
+
 function EditOrderDialog({
   order,
   onClose,
-  onSaved,
+  onRefresh,
+  onShowPaidBill,
 }: {
   order: UiOrder | null
   onClose: () => void
-  onSaved: (updated: OrderResponseDto) => void
+  onRefresh: () => Promise<void>
+  onShowPaidBill?: (payload: OrderBillsPayload) => void
 }) {
   const [tableNumber, setTableNumber] = useState<string>("")
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH")
   const [status, setStatus] = useState<OrderStatus>("NEW")
   const [saving, setSaving] = useState(false)
+  const [draftLines, setDraftLines] = useState<DraftLine[]>([])
+  const [deletedOrderItemIds, setDeletedOrderItemIds] = useState<number[]>([])
+  const [products, setProducts] = useState<ProductResponseDto[]>([])
 
   useEffect(() => {
     if (!order) return
     setTableNumber(order.tableNumber == null ? "" : String(order.tableNumber))
     setPaymentMethod(normalizePaymentMethod(order.paymentMethod))
     setStatus(normalizeOrderStatus(order.status))
+    setDeletedOrderItemIds([])
+    setDraftLines(
+      order.items.map((i) => ({
+        kind: "existing" as const,
+        orderItemId: i.orderItemId,
+        productId: i.productId,
+        name: i.name,
+        portionType: i.portionType ?? null,
+        unitPrice: i.unitPrice,
+        quantity: i.quantity,
+      })),
+    )
+  }, [order])
+
+  useEffect(() => {
+    if (!order) return
+    getAllProducts()
+      .then(setProducts)
+      .catch((e) => console.error(e))
   }, [order])
 
   const isDineIn: boolean = (order?.orderType as OrderType | undefined) === "DINE_IN"
 
+  const setQtyAt = (index: number, raw: string) => {
+    const q = Number.parseInt(raw, 10)
+    if (!Number.isFinite(q) || q < 1) return
+    setDraftLines((prev) => prev.map((line, i) => (i === index ? { ...line, quantity: q } : line)))
+  }
+
+  const removeLineAt = (index: number) => {
+    setDraftLines((prev) => {
+      const line = prev[index]
+      if (line?.kind === "existing") {
+        setDeletedOrderItemIds((ids) => [...ids, line.orderItemId])
+      }
+      return prev.filter((_, i) => i !== index)
+    })
+  }
+
+  const addBlankLine = () => {
+    setDraftLines((prev) => [
+      ...prev,
+      {
+        kind: "new",
+        tempId: `n-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        productId: "",
+        name: "",
+        portionType: null,
+        unitPrice: 0,
+        quantity: 1,
+      },
+    ])
+  }
+
+  const updateNewLineProduct = (index: number, productIdStr: string) => {
+    const pid = productIdStr === "" ? "" : Number(productIdStr)
+    const product = typeof pid === "number" && Number.isFinite(pid) ? products.find((p) => p.productId === pid) : undefined
+    setDraftLines((prev) =>
+      prev.map((line, i) => {
+        if (i !== index || line.kind !== "new") return line
+        if (!product) {
+          return { ...line, productId: "", name: "", portionType: null, unitPrice: 0 }
+        }
+        const portion = product.hasPortionPricing ? ("MEDIUM" as PortionType) : null
+        return {
+          ...line,
+          productId: product.productId,
+          name: product.name,
+          portionType: portion,
+          unitPrice: unitPriceForOrderLine(product, portion),
+        }
+      }),
+    )
+  }
+
+  const updateNewLinePortion = (index: number, portion: PortionType | null) => {
+    setDraftLines((prev) =>
+      prev.map((line, i) => {
+        if (i !== index || line.kind !== "new" || line.productId === "") return line
+        const product = products.find((p) => p.productId === line.productId)
+        if (!product) return line
+        return {
+          ...line,
+          portionType: portion,
+          unitPrice: unitPriceForOrderLine(product, portion),
+        }
+      }),
+    )
+  }
+
   const handleSave = async () => {
     if (!order) return
+    const parsedTable = tableNumber.trim() === "" ? null : Number(tableNumber)
+    if (isDineIn && (!parsedTable || parsedTable <= 0)) {
+      toast.error("Enter a valid table number for dine-in orders.")
+      return
+    }
+    if (!isDineIn && parsedTable != null) {
+      toast.error("Table number is only for dine-in.")
+      return
+    }
+
+    for (const line of draftLines) {
+      if (line.quantity < 1) {
+        toast.error("Each line needs quantity at least 1.")
+        return
+      }
+      if (line.kind === "new") {
+        if (line.productId === "") {
+          toast.error("Select a product for each new line.")
+          return
+        }
+        const p = products.find((x) => x.productId === line.productId)
+        if (p?.hasPortionPricing && (line.portionType !== "MEDIUM" && line.portionType !== "LARGE")) {
+          toast.error("Select Medium or Large for portion-priced products.")
+          return
+        }
+      }
+    }
+
     setSaving(true)
     try {
-      const parsedTable = tableNumber.trim() === "" ? null : Number(tableNumber)
-      if (isDineIn && (!parsedTable || parsedTable <= 0)) {
-        setSaving(false)
-        return
-      }
-      if (!isDineIn && parsedTable != null) {
-        setSaving(false)
-        return
+      for (const id of [...new Set(deletedOrderItemIds)]) {
+        await deleteOrderItem(id)
       }
 
-      const updated = await patchOrder(order.orderId, {
+      for (const line of draftLines) {
+        const subtotal = Number((line.unitPrice * line.quantity).toFixed(2))
+        if (line.kind === "existing") {
+          await patchOrderItem(line.orderItemId, {
+            quantity: line.quantity,
+            unitPrice: line.unitPrice,
+            subtotal,
+          })
+        } else {
+          await createOrderItem({
+            orderId: order.orderId,
+            productId: line.productId as number,
+            quantity: line.quantity,
+            portionType: line.portionType,
+            unitPrice: line.unitPrice,
+            subtotal,
+          })
+        }
+      }
+
+      const newSubtotal = draftLines.reduce((s, l) => s + l.unitPrice * l.quantity, 0)
+      const totalAmount = Number(newSubtotal.toFixed(2))
+
+      await patchOrder(order.orderId, {
         tableNumber: isDineIn ? parsedTable : null,
         paymentMethod,
         status,
+        totalAmount,
+        taxAmount: 0,
+        discountAmount: order.discountAmount ?? 0,
       })
 
-      onSaved(updated)
+      if (status === "PAID") {
+        const billLines = draftLines.map((l) => ({
+          name: l.name,
+          qty: l.quantity,
+          unitPrice: l.unitPrice,
+          lineTotal: Number((l.unitPrice * l.quantity).toFixed(2)),
+          portion: portionLabelForBill(l.portionType),
+        }))
+        onShowPaidBill?.({
+          customer: {
+            orderId: order.orderId,
+            lines: billLines,
+            subtotal: Number(draftTotal.toFixed(2)),
+            taxAmount: 0,
+            total: totalAmount,
+            tableLabel: isDineIn && parsedTable ? String(parsedTable) : "—",
+            paymentLabel: paymentLabels[paymentMethod],
+            orderTypeLabel: orderTypeLabels[order.orderType],
+          },
+          kitchenTickets: [],
+        })
+      }
+
+      await onRefresh()
+      toast.success("Order updated")
       onClose()
     } catch (e) {
       console.error(e)
+      toast.error("Failed to save order")
     } finally {
       setSaving(false)
     }
@@ -521,9 +785,11 @@ function EditOrderDialog({
 
   if (!order) return null
 
+  const draftTotal = draftLines.reduce((s, l) => s + l.unitPrice * l.quantity, 0)
+
   return (
     <Dialog open={!!order} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Edit order #{order.orderId}</DialogTitle>
         </DialogHeader>
@@ -570,23 +836,99 @@ function EditOrderDialog({
           </div>
 
           <div className="grid gap-2">
-            <Label>Items</Label>
-            <div className="space-y-1 text-sm text-muted-foreground">
-              {order.items.length === 0 ? (
-                <p>No items</p>
+            <div className="flex items-center justify-between gap-2">
+              <Label>Items</Label>
+              <Button type="button" variant="outline" size="sm" className="h-8 gap-1" onClick={addBlankLine}>
+                <Plus className="h-3.5 w-3.5" />
+                Add item
+              </Button>
+            </div>
+            <div className="space-y-3 rounded-lg border border-border p-3">
+              {draftLines.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No lines. Add a product or cancel.</p>
               ) : (
-                order.items.map((i) => (
-                  <div key={i.orderItemId} className="flex justify-between">
-                    <span>
-                      {i.name}
-                      {i.portionType ? `(${i.portionType})` : ""}
-                      {" x "}
-                      {i.quantity}
-                    </span>
-                    <span>{formatCurrency(i.subtotal)}</span>
+                draftLines.map((line, idx) => (
+                  <div key={line.kind === "existing" ? `e-${line.orderItemId}` : line.tempId} className="grid gap-2 border-b border-border/60 pb-3 last:border-0 last:pb-0">
+                    {line.kind === "existing" ? (
+                      <>
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="text-sm font-medium leading-tight">
+                            {line.name}
+                            {line.portionType ? (
+                              <span className="text-muted-foreground font-normal"> ({line.portionType})</span>
+                            ) : null}
+                          </span>
+                          <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-destructive" onClick={() => removeLineAt(idx)} aria-label="Remove line">
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
+                          <div className="grid gap-1">
+                            <Label className="text-xs text-muted-foreground">Qty</Label>
+                            <Input
+                              type="number"
+                              min={1}
+                              className="h-9"
+                              value={line.quantity}
+                              onChange={(e) => setQtyAt(idx, e.target.value)}
+                            />
+                          </div>
+                          <div className="text-xs text-muted-foreground pb-2 whitespace-nowrap">{formatCurrency(line.unitPrice)} each</div>
+                          <div className="text-sm font-semibold pb-2 text-right">{formatCurrency(line.unitPrice * line.quantity)}</div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-start justify-between gap-2">
+                          <select
+                            className="h-9 flex-1 rounded-md border border-input bg-background px-2 text-sm"
+                            value={line.productId === "" ? "" : String(line.productId)}
+                            onChange={(e) => updateNewLineProduct(idx, e.target.value)}
+                          >
+                            <option value="">Select product…</option>
+                            {products.map((p) => (
+                              <option key={p.productId} value={String(p.productId)}>
+                                {p.name}
+                              </option>
+                            ))}
+                          </select>
+                          <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-destructive" onClick={() => removeLineAt(idx)} aria-label="Remove line">
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        {line.productId !== "" && products.find((p) => p.productId === line.productId)?.hasPortionPricing ? (
+                          <div className="grid gap-1">
+                            <Label className="text-xs text-muted-foreground">Portion</Label>
+                            <select
+                              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                              value={line.portionType ?? ""}
+                              onChange={(e) => {
+                                const v = e.target.value
+                                updateNewLinePortion(idx, v === "MEDIUM" || v === "LARGE" ? v : null)
+                              }}
+                            >
+                              <option value="MEDIUM">Medium</option>
+                              <option value="LARGE">Large</option>
+                            </select>
+                          </div>
+                        ) : null}
+                        <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
+                          <div className="grid gap-1">
+                            <Label className="text-xs text-muted-foreground">Qty</Label>
+                            <Input type="number" min={1} className="h-9" value={line.quantity} onChange={(e) => setQtyAt(idx, e.target.value)} />
+                          </div>
+                          <div className="text-xs text-muted-foreground pb-2 whitespace-nowrap">{formatCurrency(line.unitPrice)} each</div>
+                          <div className="text-sm font-semibold pb-2 text-right">{formatCurrency(line.unitPrice * line.quantity)}</div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 ))
               )}
+              <div className="flex justify-between border-t border-border pt-2 text-sm font-semibold">
+                <span>Lines total</span>
+                <span>{formatCurrency(draftTotal)}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -595,7 +937,10 @@ function EditOrderDialog({
           <Button variant="outline" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={saving || (isDineIn && (tableNumber.trim() === "" || Number(tableNumber) <= 0))}>
+          <Button
+            onClick={() => void handleSave()}
+            disabled={saving || (isDineIn && (tableNumber.trim() === "" || Number(tableNumber) <= 0))}
+          >
             {saving ? "Saving..." : "Save changes"}
           </Button>
         </DialogFooter>

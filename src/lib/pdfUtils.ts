@@ -111,3 +111,81 @@ export const generateInventoryReport = (data: any[]) => {
   
   pdf.save('inventory-report.pdf')
 }
+
+export type SalarySlipPdfInput = {
+  employeeName: string
+  employeeId: string
+  role: string
+  /** yyyy-mm */
+  periodYm: string
+  paymentPerDay: number
+  present: number
+  leave: number
+  absent: number
+  paidLeaveDays: number
+  unpaidLeaveDays: number
+  paidDays: number
+  grossLkr: number
+  deductionLkr: number
+  netLkr: number
+}
+
+/** Simple text-based salary slip (loan/advance deduction + net pay). */
+export function generateSalarySlipPdf(data: SalarySlipPdfInput): void {
+  const pdf = new jsPDF("p", "mm", "a4")
+  let y = 18
+
+  const periodHuman =
+    data.periodYm.length >= 7
+      ? new Date(`${data.periodYm}-01T12:00:00`).toLocaleString(undefined, { month: "long", year: "numeric" })
+      : data.periodYm
+
+  pdf.setFontSize(18)
+  pdf.setFont("helvetica", "bold")
+  pdf.text("Salary slip", 20, y)
+  y += 12
+
+  pdf.setFontSize(10)
+  pdf.setFont("helvetica", "normal")
+  pdf.setTextColor(100, 100, 100)
+  pdf.text(`Generated: ${new Date().toLocaleString()}`, 20, y)
+  pdf.setTextColor(0, 0, 0)
+  y += 14
+
+  const row = (label: string, value: string) => {
+    pdf.setFont("helvetica", "bold")
+    pdf.setFontSize(10)
+    pdf.text(label, 20, y)
+    pdf.setFont("helvetica", "normal")
+    const wrapped = pdf.splitTextToSize(value, 115)
+    pdf.text(wrapped, 72, y)
+    y += Math.max(8, wrapped.length * 5 + 2)
+  }
+
+  row("Employee", data.employeeName)
+  row("Employee ID", data.employeeId)
+  row("Role", data.role)
+  row("Pay period", periodHuman)
+  row("Payment per day", `LKR ${data.paymentPerDay.toFixed(2)}`)
+  row("Present days", String(data.present))
+  row("Leave days", String(data.leave))
+  row("Absent days", String(data.absent))
+  row("Paid leave (capped)", String(data.paidLeaveDays))
+  row("Unpaid leave", String(data.unpaidLeaveDays))
+  row("Total paid days", String(data.paidDays))
+  row("Gross pay", `LKR ${data.grossLkr.toFixed(2)}`)
+  row("Loan / advance deduction", `LKR ${data.deductionLkr.toFixed(2)}`)
+  pdf.setFont("helvetica", "bold")
+  pdf.setFontSize(12)
+  pdf.text("Net pay", 20, y)
+  pdf.setFont("helvetica", "normal")
+  pdf.text(`LKR ${data.netLkr.toFixed(2)}`, 72, y)
+  y += 14
+
+  pdf.setFontSize(9)
+  pdf.setTextColor(90, 90, 90)
+  pdf.text("Demo payroll document — verify figures against attendance records.", 20, 285)
+
+  const safeId = data.employeeId.replace(/[^a-zA-Z0-9-_]/g, "_")
+  pdf.save(`salary-slip-${safeId}-${data.periodYm}.pdf`)
+}

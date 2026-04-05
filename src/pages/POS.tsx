@@ -5,17 +5,26 @@ import { DashboardLayout } from "@/components/Layout/DashboardLayout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Plus, Minus, Trash2, CreditCard, Search } from "lucide-react"
+import { Plus, Minus, Trash2, CreditCard, Search, ChefHat } from "lucide-react"
 import { toast } from "sonner"
 import { formatCurrency } from "@/lib/utils"
 import { formatItemCode } from "@/lib/itemCode"
 import { getAllProducts, type ProductResponseDto, type PortionSize } from "@/lib/productsApi"
 import { getAllCategories, type CategoryResponseDto } from "@/lib/categoriesApi"
-import { createOrder, type Kitchen, type OrderType, type PaymentMethod } from "@/lib/ordersApi"
+import {
+  createOrder,
+  type Kitchen,
+  type OrderResponseDto,
+  type OrderStatus,
+  type OrderType,
+  type PaymentMethod,
+} from "@/lib/ordersApi"
 import { createOrderItem, deleteOrderItem, getAllOrderItems } from "@/lib/orderItemsApi"
 import {
   SinhalaReceiptDialog,
+  printKitchenTicketsOnly,
   type KitchenTicketPayload,
   type OrderBillsPayload,
 } from "@/components/POS/SinhalaReceiptDialog"
@@ -51,6 +60,8 @@ interface CartItem {
   portionSize?: PortionSize
   imageUrl?: string
   description?: string
+  /** Drinks/showcase: bill only, omit from printed KOTs */
+  skipKitchenTicket?: boolean
 }
 
 function portionLabelSi(p?: PortionSize): string | undefined {
@@ -64,10 +75,12 @@ function buildKitchenTickets(
   orderId: number,
   tableLabel: string,
   orderType: OrderType,
-  kitchenNote?: string | null,
+  /** Note text only appears on that station’s KOT (not on the other kitchen’s ticket). */
+  notesByKitchen: Partial<Record<Kitchen, string>>,
 ): KitchenTicketPayload[] {
   const map = new Map<Kitchen, KitchenTicketPayload["lines"]>()
   for (const c of cart) {
+    if (c.skipKitchenTicket) continue
     const list = map.get(c.kitchen) ?? []
     list.push({
       nameEn: c.name,
@@ -80,15 +93,19 @@ function buildKitchenTickets(
   const stationOrder: Kitchen[] = ["KITCHEN_1", "KITCHEN_2"]
   return stationOrder
     .filter((k) => (map.get(k)?.length ?? 0) > 0)
-    .map((k) => ({
-      kitchen: k,
-      kitchenBadgeSi: k === "KITCHEN_1" ? "කුස්සිය 1" : "කුස්සිය 2",
-      orderId,
-      tableLabel,
-      orderTypeLabelSi: orderTypeLabelSi[orderType],
-      kitchenNote,
-      lines: map.get(k)!,
-    }))
+    .map((k) => {
+      const raw = notesByKitchen[k]
+      const kitchenNote = typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null
+      return {
+        kitchen: k,
+        kitchenBadgeSi: k === "KITCHEN_1" ? "කුස්සිය 1" : "කුස්සිය 2",
+        orderId,
+        tableLabel,
+        orderTypeLabelSi: orderTypeLabelSi[orderType],
+        kitchenNote,
+        lines: map.get(k)!,
+      }
+    })
 }
 
 const cartKey = (productId: number, portionSize?: PortionSize) => `${productId}:${portionSize ?? "DEFAULT"}`
@@ -109,7 +126,7 @@ const POS = () => {
 
   const [searchQuery, setSearchQuery] = useState("")
 
-  const [orderType, setOrderType] = useState<OrderType>("DINE_IN")
+  const [orderType, setOrderType] = useState<OrderType>("TAKE_AWAY")
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH")
   const [kitchenNote, setKitchenNote] = useState("")
   const [receiptOpen, setReceiptOpen] = useState(false)
@@ -184,6 +201,7 @@ const POS = () => {
       return
     }
 
+    const skipKitchenTicket = item.skipKitchenTicket === true
     setCart((prev) => [
       ...prev,
       {
@@ -197,6 +215,7 @@ const POS = () => {
         portionSize,
         imageUrl: item.imageUrl,
         description: item.description,
+        skipKitchenTicket,
       },
     ])
   }
@@ -227,17 +246,17 @@ const POS = () => {
     : menuItems
 
   const subtotal = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0)
-  const taxAmount = Number((subtotal * 0.1).toFixed(2))
+  const taxAmount = 0
   const discountAmount = 0
-  const totalAmount = Number((subtotal + taxAmount - discountAmount).toFixed(2))
+  const totalAmount = Number((subtotal - discountAmount).toFixed(2))
 
-  const handleCheckout = async () => {
+  /** Create order + line items; does not clear cart or open dialogs. */
+  const submitCartAsOrder = async (status: OrderStatus): Promise<OrderResponseDto | null> => {
     if (cart.length === 0) {
       toast.error("Cart is empty")
-      return
+      return null
     }
 
-    // /orders requires items: [{productId, quantity}] (no portion here)
     const itemsAggMap = new Map<number, number>()
     for (const c of cart) itemsAggMap.set(c.productId, (itemsAggMap.get(c.productId) ?? 0) + c.quantity)
     const items = Array.from(itemsAggMap.entries()).map(([productId, quantity]) => ({ productId, quantity }))
@@ -247,7 +266,7 @@ const POS = () => {
       const parsed = Number(String(selectedTable).replace(/\D/g, "")) || 0
       if (!parsed) {
         toast.error("Table number is required for DINE_IN orders")
-        return
+        return null
       }
       tableNumber = parsed
     } else {
@@ -267,14 +286,12 @@ const POS = () => {
         taxAmount,
         discountAmount,
         paymentMethod,
-        status: "PAID",
+        status,
         orderType,
         kitchen: orderKitchen,
         items,
       })
 
-      // If backend auto-created order-items from /orders, remove the "portionType=null" rows
-      // for portion-priced products, then create correct portion rows.
       let existingForOrderCount = 0
       try {
         const all = await getAllOrderItems()
@@ -287,26 +304,22 @@ const POS = () => {
 
         await Promise.all(toDelete.map((i) => deleteOrderItem(i.orderItemId)))
       } catch (e) {
-        // If this fails, continue (worst case Orders page may show duplicates)
         console.error(e)
       }
 
-      // Create portion order-items (MEDIUM/LARGE) always (so Orders UI can show them)
       await Promise.all(
         portionLines.map((c) =>
           createOrderItem({
             orderId: order.orderId,
             productId: c.productId,
             quantity: c.quantity,
-            portionType: c.portionSize!, // guaranteed
+            portionType: c.portionSize!,
             unitPrice: c.unitPrice,
             subtotal: Number((c.unitPrice * c.quantity).toFixed(2)),
           }),
         ),
       )
 
-      // Only create non-portion order-items if backend DID NOT create any order-items for this order
-      // (fallback for environments where /orders doesn't auto-create /order-items)
       if (existingForOrderCount === 0) {
         await Promise.all(
           nonPortionLines.map((c) =>
@@ -322,39 +335,74 @@ const POS = () => {
         )
       }
 
-      const tableLabel = orderType === "DINE_IN" ? String(selectedTable) : "—"
-      const portionLabel = (p?: PortionSize) =>
-        p === "MEDIUM" ? "Medium" : p === "LARGE" ? "Large" : undefined
-
-      const lines = cart.map((c) => ({
-        name: c.name,
-        qty: c.quantity,
-        unitPrice: c.unitPrice,
-        lineTotal: Number((c.unitPrice * c.quantity).toFixed(2)),
-        portion: portionLabel(c.portionSize),
-      }))
-
-      setLastReceipt({
-        customer: {
-          orderId: order.orderId,
-          lines,
-          subtotal,
-          taxAmount,
-          total: totalAmount,
-          tableLabel,
-          paymentLabel: paymentLabels[paymentMethod],
-          orderTypeLabel: orderTypeLabels[orderType],
-        },
-        kitchenTickets: buildKitchenTickets(cart, order.orderId, tableLabel, orderType, kitchenNote),
-      })
-      setReceiptOpen(true)
-
-      toast.success(`Order ${order.orderId} placed! Total: ${formatCurrency(totalAmount)}`)
-      setCart([])
+      return order
     } catch (e) {
       console.error(e)
       toast.error("Failed to place order")
+      return null
     }
+  }
+
+  const handleSendToKitchen = async () => {
+    if (orderType !== "DINE_IN") return
+    const order = await submitCartAsOrder("NEW")
+    if (!order) return
+
+    const tableLabel = String(selectedTable)
+    const tickets = buildKitchenTickets(cart, order.orderId, tableLabel, orderType, {
+      KITCHEN_1: kitchenNote,
+      KITCHEN_2: kitchenNote,
+    })
+    printKitchenTicketsOnly(tickets, new Date())
+    toast.success(
+      `Order #${order.orderId} sent to kitchen (pending). Mark as Paid on Orders to print the customer bill.`,
+    )
+    setCart([])
+    setKitchenNote("")
+  }
+
+  const handleCheckout = async () => {
+    const order = await submitCartAsOrder("PAID")
+    if (!order) return
+
+    const tableLabel = orderType === "DINE_IN" ? String(selectedTable) : "—"
+    const portionLabel = (p?: PortionSize) =>
+      p === "MEDIUM" ? "Medium" : p === "LARGE" ? "Large" : undefined
+
+    const lines = cart.map((c) => ({
+      name: c.name,
+      qty: c.quantity,
+      unitPrice: c.unitPrice,
+      lineTotal: Number((c.unitPrice * c.quantity).toFixed(2)),
+      portion: portionLabel(c.portionSize),
+    }))
+
+    const kitchenTickets: KitchenTicketPayload[] =
+      orderType === "DINE_IN"
+        ? []
+        : buildKitchenTickets(cart, order.orderId, tableLabel, orderType, {
+            KITCHEN_1: kitchenNote,
+            KITCHEN_2: kitchenNote,
+          })
+
+    setLastReceipt({
+      customer: {
+        orderId: order.orderId,
+        lines,
+        subtotal,
+        taxAmount,
+        total: totalAmount,
+        tableLabel,
+        paymentLabel: paymentLabels[paymentMethod],
+        orderTypeLabel: orderTypeLabels[orderType],
+      },
+      kitchenTickets,
+    })
+    setReceiptOpen(true)
+
+    toast.success(`Order ${order.orderId} placed! Total: ${formatCurrency(totalAmount)}`)
+    setCart([])
+    setKitchenNote("")
   }
 
   const renderItemsGrid = (items: ProductResponseDto[]) => (
@@ -580,8 +628,8 @@ const POS = () => {
                         }}
                         className="flex h-10 w-full rounded-xl border-2 border-input bg-background px-3 py-2 text-sm ring-offset-background"
                       >
-                        <option value="DINE_IN">Dine In</option>
                         <option value="TAKE_AWAY">Take Away</option>
+                        <option value="DINE_IN">Dine In</option>
                         <option value="DELIVERY">Delivery</option>
                       </select>
                     </div>
@@ -601,9 +649,10 @@ const POS = () => {
                     </div>
 
                     <p className="text-xs text-muted-foreground rounded-lg border border-muted/60 bg-muted/20 px-3 py-2">
-                      Each menu item is assigned to Kitchen 1 or Kitchen 2 in{" "}
-                      <span className="font-medium text-foreground">Menu Items</span>. The POS splits printed kitchen
-                      tickets by station automatically.
+                      Each item’s kitchen is set in{" "}
+                      <span className="font-medium text-foreground">Menu Items</span>. The customer bill lists the full
+                      order; print then adds separate KOTs for Kitchen 1 and/or Kitchen 2 only when those stations have
+                      items.
                     </p>
 
                     <div>
@@ -620,18 +669,16 @@ const POS = () => {
                     </div>
 
                     <div className="space-y-1">
-                      <label className="text-sm font-medium text-muted-foreground mb-1 block">
-                        Kitchen note (KOT only)
+                      <label className="text-sm font-medium text-muted-foreground block">
+                        Kitchen note (KOT only — not on customer bill)
                       </label>
-                      <Input
+                      <Textarea
                         value={kitchenNote}
                         onChange={(e) => setKitchenNote(e.target.value)}
-                        placeholder="E.g. No onions, extra spicy, pack separately"
-                        className="rounded-xl border-2 focus:border-primary transition-colors duration-200 text-xs"
+                        placeholder="Printed on each kitchen ticket that applies (කුස්සිය 1 / 2) for this order"
+                        rows={2}
+                        className="rounded-xl border-2 focus:border-primary transition-colors duration-200 text-xs resize-y min-h-[2.5rem]"
                       />
-                      <p className="text-[11px] text-muted-foreground">
-                        Printed only on kitchen tickets — not on the customer bill.
-                      </p>
                     </div>
                   </div>
                 </CardHeader>
@@ -660,6 +707,9 @@ const POS = () => {
                                   <p className="text-[10px] font-mono text-muted-foreground mt-0.5">
                                     {formatItemCode(item.productId)}
                                   </p>
+                                  {item.skipKitchenTicket ? (
+                                    <p className="text-[10px] text-muted-foreground mt-0.5">Showcase — bill only (no KOT)</p>
+                                  ) : null}
                                   <p className="text-xs text-accent font-medium mt-1">
                                     {formatCurrency(item.unitPrice)} each
                                   </p>
@@ -707,28 +757,45 @@ const POS = () => {
                   </div>
 
                   <div className="shrink-0 space-y-1 border-t border-muted/50 bg-card pt-3 mt-2">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground font-medium">Subtotal</span>
-                      <span className="font-bold">{formatCurrency(subtotal)}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground font-medium">Tax (10%)</span>
-                      <span className="font-bold">{formatCurrency(taxAmount)}</span>
-                    </div>
                     <div className="flex justify-between text-lg font-bold pt-1 border-t-2 border-primary/20">
                       <span>Total</span>
                       <span className="text-accent">{formatCurrency(totalAmount)}</span>
                     </div>
 
-                    <Button
-                      className="w-full h-10 text-base font-bold rounded-lg modern-button gradient-primary hover:shadow-modern-lg disabled:opacity-50 disabled:cursor-not-allowed mt-2"
-                      size="lg"
-                      disabled={cart.length === 0}
-                      onClick={handleCheckout}
-                    >
-                      <CreditCard className="mr-3 h-5 w-5" />
-                      Process Payment
-                    </Button>
+                    {orderType === "DINE_IN" ? (
+                      <div className="flex flex-col gap-2 mt-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="w-full h-10 text-base font-semibold rounded-lg"
+                          size="lg"
+                          disabled={cart.length === 0}
+                          onClick={() => void handleSendToKitchen()}
+                        >
+                          <ChefHat className="mr-3 h-5 w-5" />
+                          Send to kitchen (KOT)
+                        </Button>
+                        <Button
+                          className="w-full h-10 text-base font-bold rounded-lg modern-button gradient-primary hover:shadow-modern-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                          size="lg"
+                          disabled={cart.length === 0}
+                          onClick={() => void handleCheckout()}
+                        >
+                          <CreditCard className="mr-3 h-5 w-5" />
+                          Pay &amp; print bill
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button
+                        className="w-full h-10 text-base font-bold rounded-lg modern-button gradient-primary hover:shadow-modern-lg disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+                        size="lg"
+                        disabled={cart.length === 0}
+                        onClick={() => void handleCheckout()}
+                      >
+                        <CreditCard className="mr-3 h-5 w-5" />
+                        Process Payment
+                      </Button>
+                    )}
                   </div>
                 </CardContent>
               </Card>

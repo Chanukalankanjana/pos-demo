@@ -19,7 +19,9 @@ export type OrderItemResponseDto = OrderItemRequestDto & {
 
 export type OrderItemPatchDto = Partial<
   Pick<OrderItemRequestDto, "orderId" | "productId" | "quantity" | "unitPrice" | "subtotal">
->
+> & {
+  portionType?: PortionType | null
+}
 
 function normalizePortionType(v: unknown): PortionType | null {
   const s = String(v ?? "").trim().toUpperCase()
@@ -118,13 +120,14 @@ export async function updateOrderItem(orderItemId: number, payload: OrderItemReq
 
 export async function patchOrderItem(orderItemId: number, patch: OrderItemPatchDto): Promise<OrderItemResponseDto> {
   const current = await getOrderItemById(orderItemId)
+  const portionType = patch.portionType !== undefined ? patch.portionType : current.portionType
   return updateOrderItem(orderItemId, {
     orderId: patch.orderId ?? current.orderId,
     productId: patch.productId ?? current.productId,
     quantity: patch.quantity ?? current.quantity,
     unitPrice: patch.unitPrice ?? current.unitPrice,
     subtotal: patch.subtotal ?? current.subtotal,
-    portionType: current.portionType,
+    portionType,
   })
 }
 

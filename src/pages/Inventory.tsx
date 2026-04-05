@@ -2,13 +2,14 @@ import { DashboardLayout } from "@/components/Layout/DashboardLayout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { AlertCircle, Package, Search, Trash2, Pencil } from "lucide-react"
+import { AlertCircle, Package, Search, Trash2, Pencil, CookingPot, Plus, Minus } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
 import { formatCurrency } from "@/lib/utils"
 import {
+  applyInventoryUsageDeductions,
   createInventoryItem,
   deleteInventoryItem,
   getAllInventoryItems,
@@ -45,6 +46,10 @@ const Inventory = () => {
     lowStockThreshold: "",
     costPerUnit: "",
   })
+
+  const [usageOpen, setUsageOpen] = useState(false)
+  const [usageLines, setUsageLines] = useState<{ itemId: number | ""; quantity: string }[]>([])
+  const [usageSaving, setUsageSaving] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -169,6 +174,29 @@ const Inventory = () => {
     }
   }
 
+  const openUsageDialog = () => {
+    setUsageLines([{ itemId: "", quantity: "" }])
+    setUsageOpen(true)
+  }
+
+  const handleSaveUsage = async () => {
+    const payload = usageLines
+      .filter((l) => l.itemId !== "")
+      .map((l) => ({ itemId: l.itemId as number, quantity: Number(l.quantity) }))
+    setUsageSaving(true)
+    try {
+      const next = await applyInventoryUsageDeductions(payload)
+      setItems(next)
+      setUsageOpen(false)
+      toast.success("Stock updated — quantities deducted from inventory")
+    } catch (e) {
+      console.error(e)
+      toast.error(e instanceof Error ? e.message : "Could not apply usage")
+    } finally {
+      setUsageSaving(false)
+    }
+  }
+
   return (
     <DashboardLayout>
       <div className="p-8">
@@ -177,17 +205,24 @@ const Inventory = () => {
             <h1 className="text-3xl font-bold">Inventory Management</h1>
             <p className="text-muted-foreground mt-1">Track and manage your stock</p>
             <p className="mt-2 text-xs text-muted-foreground">
-              Note: All quantities are measured in <span className="font-medium">kilograms (kg)</span>.
+              Quantities use <span className="font-medium">kg</span> or <span className="font-medium">litres (L)</span> per
+              item label. Use <span className="font-medium">Record catering use</span> to subtract stock after an event.
             </p>
           </div>
 
-          <Dialog open={addOpen} onOpenChange={setAddOpen}>
-            <DialogTrigger asChild>
-              <Button className="gap-2">
-                <Package className="w-4 h-4" />
-                Add Item
-              </Button>
-            </DialogTrigger>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" className="gap-2" onClick={openUsageDialog} disabled={items.length === 0}>
+              <CookingPot className="w-4 h-4" />
+              Record catering use
+            </Button>
+
+            <Dialog open={addOpen} onOpenChange={setAddOpen}>
+              <DialogTrigger asChild>
+                <Button className="gap-2">
+                  <Package className="w-4 h-4" />
+                  Add Item
+                </Button>
+              </DialogTrigger>
 
             <DialogContent className="sm:max-w-[425px]">
               <DialogHeader>
@@ -252,6 +287,88 @@ const Inventory = () => {
               </div>
             </DialogContent>
           </Dialog>
+
+            <Dialog open={usageOpen} onOpenChange={setUsageOpen}>
+              <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Record catering / stock use</DialogTitle>
+                </DialogHeader>
+                <p className="text-sm text-muted-foreground">
+                  Add each ingredient you used (same units as inventory: kg or L). Saving subtracts these amounts from
+                  current stock.
+                </p>
+                <div className="space-y-3 py-2">
+                  {usageLines.map((line, idx) => (
+                    <div key={idx} className="flex flex-wrap items-end gap-2">
+                      <div className="grid gap-1 flex-1 min-w-[140px]">
+                        <Label className="text-xs">Item</Label>
+                        <select
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          value={line.itemId === "" ? "" : String(line.itemId)}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setUsageLines((prev) =>
+                              prev.map((p, i) => (i === idx ? { ...p, itemId: v === "" ? "" : Number(v) } : p)),
+                            )
+                          }}
+                        >
+                          <option value="">Select item</option>
+                          {items.map((i) => (
+                            <option key={i.itemId} value={i.itemId}>
+                              {i.itemName} (in stock: {i.quantity})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="grid gap-1 w-28">
+                        <Label className="text-xs">Qty used</Label>
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          min="0"
+                          step="0.01"
+                          placeholder="0"
+                          value={line.quantity}
+                          onChange={(e) =>
+                            setUsageLines((prev) => prev.map((p, i) => (i === idx ? { ...p, quantity: e.target.value } : p)))
+                          }
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="shrink-0"
+                        disabled={usageLines.length <= 1}
+                        onClick={() => setUsageLines((prev) => prev.filter((_, i) => i !== idx))}
+                        aria-label="Remove line"
+                      >
+                        <Minus className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="gap-1"
+                    onClick={() => setUsageLines((prev) => [...prev, { itemId: "", quantity: "" }])}
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add line
+                  </Button>
+                </div>
+                <div className="flex justify-end gap-2 pt-2 border-t">
+                  <Button type="button" variant="outline" onClick={() => setUsageOpen(false)} disabled={usageSaving}>
+                    Cancel
+                  </Button>
+                  <Button type="button" onClick={() => void handleSaveUsage()} disabled={usageSaving}>
+                    {usageSaving ? "Saving…" : "Save & deduct stock"}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
