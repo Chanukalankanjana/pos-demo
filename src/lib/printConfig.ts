@@ -16,15 +16,15 @@ export type PrintPrinterConfig = {
 /** First-time load (no localStorage entry yet). Change in Settings anytime; existing saved config wins over this. */
 const defaults: PrintPrinterConfig = {
   printBackend: "qz",
-  customerPrinterName: "Microsoft Print to PDF",
-  kitchen1PrinterName: "",
-  kitchen2PrinterName: "",
+  customerPrinterName: "POS-3440",
+  kitchen1PrinterName: "POS-3250",
+  kitchen2PrinterName: "POS-5250",
   printAgentUrl: "",
 }
 
 function normalizeBackend(v: unknown): PrintBackend {
   if (v === "qz" || v === "http" || v === "browser") return v
-  return "browser"
+  return defaults.printBackend
 }
 
 export function loadPrintPrinterConfig(): PrintPrinterConfig {
