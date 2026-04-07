@@ -6,13 +6,14 @@
  */
 import cors from "cors"
 import express from "express"
-import { mkdtemp, rm, writeFile } from "fs/promises"
+import { mkdtemp, rm } from "fs/promises"
 import { tmpdir } from "os"
 import { join } from "path"
-import { print } from "pdf-to-printer"
+import pdfToPrinterPkg from "pdf-to-printer"
 import puppeteer from "puppeteer"
 
 const PORT = Number(process.env.PORT) || 9101
+const { print } = pdfToPrinterPkg
 
 const app = express()
 app.use(cors({ origin: true }))
@@ -37,17 +38,22 @@ app.post("/print", async (req, res) => {
   try {
     browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] })
     const page = await browser.newPage()
+    await page.emulateMediaType("print")
     await page.setContent(html, { waitUntil: "load", timeout: 45_000 })
     await page.pdf({
       path: pdfPath,
-      width: "80mm",
+      // Let CSS control the roll size (receipt HTML already has @page { size: 80mm auto }).
+      preferCSSPageSize: true,
       printBackground: true,
       margin: { top: "2mm", right: "2mm", bottom: "2mm", left: "2mm" },
     })
     await browser.close()
     browser = null
 
-    await print(pdfPath, { printer: printerName.trim() })
+    const target = printerName.trim()
+    // Note: "Microsoft Print to PDF" requires a Save dialog; allow it during testing.
+    const needsDialog = target.toLowerCase().includes("microsoft print to pdf")
+    await print(pdfPath, { printer: target, printDialog: needsDialog, silent: !needsDialog })
     res.json({ ok: true })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)

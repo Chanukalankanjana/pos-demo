@@ -115,27 +115,30 @@ function buildCustomerBillHtml(customer: CustomerBillPayload, d: Date): string {
   const rows = customer.lines
     .map(
       (line) => `<tr>
-      <td class="py-1">${escapeHtml(lineDisplayName(line))}</td>
-      <td style="text-align:center">${line.qty}</td>
-      <td style="text-align:right;white-space:nowrap">${formatCurrency(line.unitPrice)}</td>
-      <td style="text-align:right;white-space:nowrap;font-weight:600">${formatCurrency(line.lineTotal)}</td>
+      <td class="c-item">${escapeHtml(lineDisplayName(line))}</td>
+      <td class="c-qty">${line.qty}</td>
+      <td class="c-money">${formatCurrency(line.unitPrice)}</td>
+      <td class="c-money c-strong">${formatCurrency(line.lineTotal)}</td>
     </tr>`,
     )
     .join("")
+  const paymentRow = customer.paymentLabel.trim()
+    ? `<div class="meta-row"><span class="meta-k">${customerReceiptDialogLabels.payment}</span><span class="meta-v">${escapeHtml(customer.paymentLabel)}</span></div>`
+    : ""
   return `<div class="customer-print-section">
-    <div style="text-align:center;border-bottom:1px solid #e5e5e5;padding-bottom:8px">
-      <p style="font-weight:600;font-size:1rem;margin:0">${customerReceiptDialogLabels.restaurant}</p>
-      <p style="font-size:0.7rem;color:#666;margin:4px 0 0">${customerReceiptDialogLabels.receipt}</p>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:0.75rem;margin-top:8px">
-      <span>${customerReceiptDialogLabels.date}:</span><span style="text-align:right">${escapeHtml(d.toLocaleString())}</span>
-      <span>${customerReceiptDialogLabels.orderNo}:</span><span style="text-align:right;font-family:monospace">#${customer.orderId}</span>
-      <span>${customerReceiptDialogLabels.table}:</span><span style="text-align:right">${escapeHtml(customer.tableLabel)}</span>
-      <span>${customerReceiptDialogLabels.orderType}:</span><span style="text-align:right">${escapeHtml(customer.orderTypeLabel)}</span>${
-        customer.paymentLabel.trim()
-          ? `<span>${customerReceiptDialogLabels.payment}:</span><span style="text-align:right">${escapeHtml(customer.paymentLabel)}</span>`
-          : ""
-      }
+    <div class="c-header">
+      <div class="c-brand">
+        <div class="c-brand-name">${customerReceiptDialogLabels.restaurant}</div>
+        <div class="c-brand-sub">${customerReceiptDialogLabels.receipt}</div>
+      </div>
+      <div class="c-rule"></div>
+      <div class="meta">
+        <div class="meta-row"><span class="meta-k">${customerReceiptDialogLabels.date}</span><span class="meta-v">${escapeHtml(d.toLocaleString())}</span></div>
+        <div class="meta-row"><span class="meta-k">${customerReceiptDialogLabels.orderNo}</span><span class="meta-v mono">#${customer.orderId}</span></div>
+        <div class="meta-row"><span class="meta-k">${customerReceiptDialogLabels.table}</span><span class="meta-v">${escapeHtml(customer.tableLabel)}</span></div>
+        <div class="meta-row"><span class="meta-k">${customerReceiptDialogLabels.orderType}</span><span class="meta-v">${escapeHtml(customer.orderTypeLabel)}</span></div>
+        ${paymentRow}
+      </div>
     </div>
     <table>
       <thead><tr>
@@ -146,58 +149,63 @@ function buildCustomerBillHtml(customer: CustomerBillPayload, d: Date): string {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <div style="font-size:0.75rem;border-top:1px solid #e5e5e5;padding-top:8px;margin-top:8px">
+    <div class="totals">
       ${
         customer.taxAmount > 0
-          ? `<div style="display:flex;justify-content:space-between"><span>${customerReceiptDialogLabels.sub}</span><span>${formatCurrency(customer.subtotal)}</span></div>
-      <div style="display:flex;justify-content:space-between"><span>${customerReceiptDialogLabels.tax}</span><span>${formatCurrency(customer.taxAmount)}</span></div>
-      <div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;padding-top:4px"><span>${customerReceiptDialogLabels.grand}</span><span>${formatCurrency(customer.total)}</span></div>`
-          : `<div style="display:flex;justify-content:space-between;font-size:1rem;font-weight:700;padding-top:4px"><span>${customerReceiptDialogLabels.grand}</span><span>${formatCurrency(customer.total)}</span></div>`
+          ? `<div class="total-row"><span>${customerReceiptDialogLabels.sub}</span><span>${formatCurrency(customer.subtotal)}</span></div>
+      <div class="total-row"><span>${customerReceiptDialogLabels.tax}</span><span>${formatCurrency(customer.taxAmount)}</span></div>
+      <div class="grand-row"><span>${customerReceiptDialogLabels.grand}</span><span>${formatCurrency(customer.total)}</span></div>`
+          : `<div class="grand-row"><span>${customerReceiptDialogLabels.grand}</span><span>${formatCurrency(customer.total)}</span></div>`
       }
     </div>
-    <p style="text-align:center;font-size:0.7rem;color:#666;padding-top:8px;margin:0">${customerReceiptDialogLabels.thanks}</p>
+    <div class="c-rule dotted"></div>
+    <p class="c-footer">${customerReceiptDialogLabels.thanks}</p>
   </div>`
 }
 
 /** Matches index.css — embedded in print popup so styles apply without Tailwind */
 const KOT_PRINT_STYLES = `
   .kot-title {
-    font-size: 1.4rem;
+    font-size: 1.15rem;
+    letter-spacing: 0.3px;
     border-bottom: 2px solid #000;
-    padding-bottom: 5px;
-    margin-bottom: 10px;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
     text-align: center;
     font-weight: bold;
   }
   .kot-table {
-    font-size: 1.1rem;
-    line-height: 1.8;
+    font-size: 0.95rem;
+    line-height: 1.5;
     width: 100%;
     border-collapse: collapse;
-    margin-top: 12px;
+    margin-top: 10px;
   }
   .kot-table th, .kot-table td {
     text-align: left;
-    padding: 6px 4px;
-    border-bottom: 1px solid #eee;
+    padding: 7px 4px;
+    border-bottom: 1px solid #eaeaea;
   }
   .kot-table th:nth-child(2), .kot-table td:nth-child(2) { text-align: center; }
   .kot-table th:nth-child(3), .kot-table td:nth-child(3) { text-align: left; word-break: break-word; }
   .kot-table th { font-weight: 600; }
   .prep-note {
     font-style: italic;
-    font-size: 0.85rem;
-    margin-top: 20px;
+    font-size: 0.8rem;
+    margin-top: 14px;
     text-align: center;
-    border-top: 1px dashed #666;
-    padding-top: 10px;
+    border-top: 1px dashed #777;
+    padding-top: 8px;
   }
   .badge { display: inline-block; padding: 4px 10px; border-radius: 6px; background: #111; color: #fff; font-size: 0.85rem; margin: 8px 0; }
   .kot-page { page-break-after: always; }
   .kot-page:last-child { page-break-after: auto; }
   .kot-single { page-break-after: auto; }
   .kot-subtitle { font-size: 0.7rem; color: #666; text-align: center; margin: 4px 0 8px; }
-  .kot-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 0.75rem; margin-top: 8px; }
+  /* Key/value rows: keep labels tight, values aligned nicely */
+  .kot-meta { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 4px; font-size: 0.72rem; margin-top: 8px; color: #111; align-items: baseline; }
+  .kot-meta > span:nth-child(odd) { color: #555; }
+  .kot-meta > span:nth-child(even) { text-align: right; font-weight: 600; }
 `
 
 function renderKotInnerHtml(ticket: KitchenTicketPayload, d: Date) {
@@ -259,9 +267,28 @@ function buildPrintDocumentHtmlCustomerOnly(customerHtml: string): string {
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Sinhala:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
       ${THERMAL_BASE_STYLES}
-      .customer-print-section table { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 8px; }
-      .customer-print-section th, .customer-print-section td { text-align: left; padding: 3px 1px; border-bottom: 1px solid #eee; }
-      .customer-print-section th { font-weight: 600; }
+      .customer-print-section { color: #111; }
+      .c-brand { text-align: center; }
+      .c-brand-name { font-weight: 800; font-size: 14px; letter-spacing: 0.2px; margin: 0; }
+      .c-brand-sub { font-size: 10px; color: #666; margin-top: 2px; }
+      .c-rule { height: 1px; background: #e9e9e9; margin: 8px 0; }
+      .c-rule.dotted { background: none; border-top: 1px dashed #8c8c8c; height: 0; margin: 10px 0 8px; }
+      .meta { font-size: 10px; }
+      .meta-row { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+      .meta-k { color: #555; }
+      .meta-v { text-align: right; font-weight: 600; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace; }
+      .customer-print-section table { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 10px; }
+      .customer-print-section thead th { font-weight: 700; color: #333; padding: 6px 0 5px; border-bottom: 1px solid #dcdcdc; }
+      .customer-print-section tbody td { padding: 7px 0; border-bottom: 1px solid #efefef; vertical-align: top; }
+      .c-item { padding-right: 6px; }
+      .c-qty { width: 2.5rem; text-align: center; font-weight: 700; }
+      .c-money { text-align: right; white-space: nowrap; }
+      .c-strong { font-weight: 800; }
+      .totals { margin-top: 10px; padding-top: 8px; border-top: 1px solid #dcdcdc; font-size: 11px; }
+      .total-row { display: flex; justify-content: space-between; padding: 2px 0; color: #333; }
+      .grand-row { display: flex; justify-content: space-between; padding-top: 6px; font-size: 14px; font-weight: 900; }
+      .c-footer { text-align: center; font-size: 10px; color: #666; margin: 0; }
     </style>
   </head><body>${customerHtml}</body></html>`
 }

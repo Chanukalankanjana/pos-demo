@@ -16,9 +16,9 @@ export type PrintPrinterConfig = {
 /** First-time load (no localStorage entry yet). Change in Settings anytime; existing saved config wins over this. */
 const defaults: PrintPrinterConfig = {
   printBackend: "qz",
-  customerPrinterName: "POS-3440",
-  kitchen1PrinterName: "POS-3250",
-  kitchen2PrinterName: "POS-5250",
+  customerPrinterName: "",
+  kitchen1PrinterName: "",
+  kitchen2PrinterName: "", 
   printAgentUrl: "",
 }
 
